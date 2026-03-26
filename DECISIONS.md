@@ -352,3 +352,15 @@ changing the architecture.
 **Decision**: Added `current_hour = datetime.now().hour` check in `_run_daily_brief()`. If `anchors_ready` is False AND `current_hour >= settings.anchor_cutoff_hour`, run the pipeline anyway and log `daily_brief_anchor_cutoff_reached`. Added 5 regression tests to `tests/test_daily_brief.py` covering before/at/past cutoff and anchors-present cases.
 
 **Consequences**: The brief will now always run by 10am on weekdays regardless of anchor newsletter delivery. The cutoff hour is configurable via `ANCHOR_CUTOFF_HOUR` env var.
+
+---
+
+## 2026-03-26: pgvector returns numpy arrays — never evaluate embedding fields as booleans
+
+**Status**: Fixed + regression tests added
+
+**Context**: Production log showed `inbox_command_pipeline_failed error=The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()` after extracting 3 stories. The crash occurred in `pipeline/embedder.py` `_filter_already_covered()` at the line `recent_vecs = [r["embedding"] for r in recent if r.get("embedding")]`. `tools/db.py` calls `register_vector(conn)` from `pgvector.psycopg`, which registers numpy array deserialization for vector columns. Any embedding field fetched from the DB is therefore a numpy array, not a Python list. Evaluating `if numpy_array` on a multi-element array raises `ValueError`. This only fires on the second+ pipeline run (the first run has no recent stories in DB, so `recent` is empty and the guard returns early).
+
+**Decision**: Use `is not None` for all nullable field checks on columns that could be numpy arrays from pgvector. Never use truthiness checks (`if val`, `if r.get("key")`) on any embedding field. Added two regression tests that pass real numpy arrays as `recent` embeddings.
+
+**Consequences**: Any future code fetching embedding columns from DB must follow this rule. The consistent pattern in this codebase is `if r.get("embedding") is not None`.

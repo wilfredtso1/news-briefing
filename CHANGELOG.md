@@ -1,5 +1,13 @@
 # Changelog
 
+## [Production Bug Fixes] — 2026-03-26
+
+### Fixed
+- **Inbox command crashed on second+ pipeline run** — `pipeline/embedder.py` `_filter_already_covered()` used `if r.get("embedding")` to skip null embeddings from the DB. `pgvector`'s `register_vector` returns embedding columns as numpy arrays; evaluating a multi-element numpy array as a boolean raises `ValueError: truth value of array is ambiguous`. This crashed every pipeline run triggered after the first successful brief (when `get_recent_story_embeddings` returns rows). Fixed with `is not None`. Added two regression tests using real numpy arrays.
+- **`INTERVAL '%s days'` in five db.py queries** — parameterized with psycopg3's extended query protocol, `%s` inside a SQL string literal becomes `$1` as a literal string, not a bound parameter. Rewrote all five to `(%s * INTERVAL '1 day')` to keep the parameter outside any string literal.
+
+---
+
 ## [End-to-End Reliability + Testing Harness] — 2026-03-26
 
 ### Fixed

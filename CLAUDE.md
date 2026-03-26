@@ -316,13 +316,13 @@ Set `WEB_SERVICE_URL` as a shared env var (the public URL of the web service).
 
 | Service name | Cron schedule | Start command | Status |
 |---|---|---|---|
-| `daily-brief` | `*/15 6-10 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/daily-brief` | **⚠ Not created** |
-| `poll-replies` | `*/15 * * * *` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/poll-replies` | Created, **no start command** |
-| `deep-read` | `0 9 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/deep-read` | Created, **no start command** |
-| `weekend-catchup` | `0 8 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/weekend-catchup` | **⚠ Not created** |
-| `supervisor-weekly` | `0 7 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/supervisor-weekly` | Created, **no start command** |
+| `daily-brief` | `*/15 6-10 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/daily-brief` | ✅ Configured |
+| `poll-replies` | `*/15 * * * *` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/poll-replies` | ✅ Configured |
+| `deep-read` | `0 9 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/deep-read` | ✅ Configured |
+| `weekend-catchup` | `0 8 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/weekend-catchup` | ✅ Configured |
+| `supervisor-weekly` | `0 7 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/supervisor-weekly` | ✅ Configured |
 
-**Action required**: Create `daily-brief` and `weekend-catchup` in Railway dashboard. For `poll-replies`, `deep-read`, `supervisor-weekly`: add the start command above in each service's settings. Also set `ALERT_EMAIL` on the web service so pipeline failures surface as email alerts.
+**Action required**: Set `ALERT_EMAIL` on the web service — pipeline failures are silently logged only (`alert_skipped reason=ALERT_EMAIL not set` confirmed in production logs).
 
 Notes:
 - `daily-brief` polls every 15 min Mon–Fri from 6–10am. The pipeline checks anchor sources before running, and exits early if the brief was already sent today (`was_brief_sent_today()` guard prevents duplicate sends after archiving).

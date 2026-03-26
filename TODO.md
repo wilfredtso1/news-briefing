@@ -15,10 +15,8 @@
 - [x] Anchor cutoff hour — `_run_daily_brief` now implements the 10am hard cutoff; was configured but never checked
 - [x] Daily brief idempotency — `was_brief_sent_today()` guard prevents duplicate pipeline runs after newsletters are archived
 - [x] `tests/test_daily_brief.py` — 27 tests for the full pipeline (was 0)
-- [ ] **Railway `daily-brief` cron service** — needs to be created in dashboard (see CLAUDE.md). This is why emails aren't arriving.
-- [ ] **Railway `weekend-catchup` cron service** — needs to be created in dashboard
-- [ ] **`poll-replies`, `deep-read`, `supervisor-weekly`** — services exist but need start commands configured
-- [ ] **Set `ALERT_EMAIL`** on Railway web service — pipeline failures are currently silently swallowed
+- [x] **Railway cron services** — all 5 confirmed created and configured per user (2026-03-26); `was_brief_sent_today()` guard confirmed firing in production logs
+- [ ] **Set `ALERT_EMAIL`** on Railway web service — pipeline failures silently swallowed; confirmed missing: `alert_skipped reason=ALERT_EMAIL not set` in production logs
 - [ ] **Remaining manual**: Run `migrations/005_users.sql` against Supabase (if not done)
 - [ ] **Future**: Add `user_id` to `onboarding_events` for proper per-user scoping (see DECISIONS.md 2026-03-26)
 - [ ] **Future**: Multi-tenancy — `user_id` column on all pipeline tables
