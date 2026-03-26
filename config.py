@@ -6,6 +6,7 @@ if anything required is missing, rather than failing mid-pipeline.
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -41,6 +42,9 @@ class Config:
     anchor_cutoff_hour: int  # Hard cutoff — run regardless of anchors after this hour (local time)
     deep_read_threshold: int  # Number of long-form pieces before triggering Deep Read
     cosine_similarity_threshold: float
+
+    # Optional — code change agent notification email
+    code_change_notify_email: Optional[str] = None
 
 
 def _require(key: str) -> str:
@@ -108,6 +112,7 @@ def _load() -> Config:
         anchor_cutoff_hour=int(os.getenv("ANCHOR_CUTOFF_HOUR", "10")),
         deep_read_threshold=int(os.getenv("DEEP_READ_THRESHOLD", "5")),
         cosine_similarity_threshold=float(os.getenv("COSINE_SIMILARITY_THRESHOLD", "0.82")),
+        code_change_notify_email=os.getenv("CODE_CHANGE_NOTIFY_EMAIL") or os.getenv("ALERT_EMAIL"),
     )
 
 
