@@ -79,9 +79,9 @@ def run(run_id: str, dry_run: bool = False) -> dict:
 
     for msg in messages:
         result: ClassificationResult = classify(msg)
-        if result.category == _BRIEF_CATEGORY:
+        if result.source_type == _BRIEF_CATEGORY:
             brief_messages.append(msg)
-        elif result.category == "long_form":
+        elif result.source_type == "long_form":
             long_form_ids.append(msg.message_id)
             log.debug("daily_brief_long_form_queued", run_id=run_id, sender=msg.sender)
         # Skip personal, transactional, unknown — leave in inbox
@@ -105,8 +105,8 @@ def run(run_id: str, dry_run: bool = False) -> dict:
         stories = extract_stories(
             body_text=msg.body_text,
             body_html=msg.body_html,
-            newsletter_name=msg.sender_name or msg.sender,
-            sender_email=msg.sender,
+            newsletter_name=msg.sender,
+            sender_email=msg.sender_email,
         )
         if stories:
             all_stories.extend(stories)

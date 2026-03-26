@@ -58,6 +58,60 @@ Foundational decisions made before development began are documented in `CLAUDE.m
 
 ---
 
+## 2026-03-26: Sequential graph design (no fan-out) for immediate supervisor
+
+**Status**: Accepted
+
+**Context**: The 'both' reply type requires two independent operations: marking the digest
+acknowledged AND processing the feedback config change. The natural LangGraph solution is
+fan-out (two parallel branches). However, LangGraph's fan-out API changed between 0.2.x
+versions and requires the `Send` primitive, which has more complex state management semantics.
+
+**Options considered**:
+1. **Fan-out via `Send`** — True parallel execution of log_acknowledgment and extract_change.
+   Pros: semantically correct. Cons: Send API complexity, harder to test, version-sensitive.
+2. **Sequential: maybe_acknowledge → route_feedback** — A single `maybe_acknowledge` node
+   that conditionally calls `mark_digest_acknowledged` (no-op for non-acknowledge types),
+   then routes to `extract_change` for feedback/both or END for acknowledge.
+   Pros: simpler, version-stable, easy to test, no shared state merge needed.
+   Cons: slightly less conceptually pure (acknowledgment and feedback are sequential not parallel).
+
+**Decision**: Sequential design. Acknowledgment and feedback are not truly independent —
+both need the digest_id and raw_reply from state. The sequential ordering (acknowledge first,
+then extract change) is correct in practice and much easier to test and maintain.
+
+**Consequences**: The graph is simpler and easier to reason about. The `maybe_acknowledge`
+node is a no-op for pure feedback/irrelevant replies, adding one trivial step but keeping
+routing consistent.
+
+---
+
+## 2026-03-26: Haiku for all immediate supervisor LLM calls (no Opus)
+
+**Status**: Accepted
+
+**Context**: The immediate supervisor makes two LLM calls per reply: classify and extract.
+CLAUDE.md instructs to use Haiku for high-volume classification and Opus for reasoning-heavy
+decisions. Needed to decide whether extraction requires Opus.
+
+**Options considered**:
+1. **Haiku for both classify and extract** — Fast, cheap. Extraction is structured JSON output
+   with well-defined keys — Haiku handles this well.
+2. **Haiku for classify, Opus for extract** — More capable extraction. Cons: 15x cost
+   increase for the extraction call; extraction is a structured task, not open-ended reasoning.
+3. **Opus for both** — Maximum quality. Cons: excessive cost for a per-reply task; overkill.
+
+**Decision**: Haiku for both calls. Reply classification and config extraction are structured
+JSON tasks with enumerated options. The prompts constrain the output space enough that Haiku
+produces reliable results. Opus is reserved for the weekly pattern sweep (Phase 5), which
+requires open-ended reasoning over many feedback events.
+
+**Consequences**: Cost stays low for high-frequency reply polling. If extraction quality is
+found to be poor in practice, the model can be upgraded for the extract call only without
+changing the architecture.
+
+---
+
 ## 2026-03-26: Voyage AI voyage-3 (1024 dimensions) for embeddings
 
 **Status**: Accepted
