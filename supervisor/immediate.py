@@ -84,7 +84,13 @@ _haiku = ChatAnthropic(
 
 # Low-risk keys can be updated without human review. Any key not in this set
 # is treated as high-risk and queued for approval.
-LOW_RISK_CONFIG_KEYS = frozenset({"topic_weights", "word_budget", "cosine_similarity_threshold"})
+LOW_RISK_CONFIG_KEYS = frozenset({
+    "topic_weights",
+    "word_budget",
+    "cosine_similarity_threshold",
+    "synthesis_style_notes",   # new: JSON array of style instruction strings
+    "web_search_topics",       # new: JSON array of topic strings to search daily
+})
 
 # ---------------------------------------------------------------------------
 # Output dataclass
@@ -155,6 +161,7 @@ Types:
 - "feedback" — user requests a change (e.g. "less crypto", "more AI stories", "shorter please")
 - "both" — reply contains both an acknowledgment AND a change request
 - "command" — user is requesting a pipeline run on demand (e.g. "send brief", "send me a deep read", "morning brief please", "give me the news")
+- "code_change_approval" — user is approving a code change proposal (reply contains "approve" or "approved")
 - "irrelevant" — unrelated reply (forwarded email, out-of-office, spam)
 
 Be conservative: only use "feedback" or "both" if the user is clearly requesting a change.
@@ -209,6 +216,9 @@ Known config keys and their structure:
 - "topic_weights": object mapping topic name to float weight (e.g. {{"ai": 1.5, "crypto": 0.3}})
 - "word_budget": object with budget keys (e.g. {{"daily_brief_total": 2500}})
 - "cosine_similarity_threshold": float between 0.0 and 1.0
+- "synthesis_style_notes": JSON array of style instruction strings (e.g. ["write shorter stories"])
+- "web_search_topics": JSON array of topic strings to search daily (e.g. ["markets", "sports"])
+- "source_reclassify": object {{"email": "sender@domain.com", "type": "news_brief|long_form"}} — use when user wants to move a newsletter between daily brief and deep read
 - "prompt_edit": free-text instruction to change how stories are written (HIGH RISK)
 - "unsubscribe": sender email address to unsubscribe from (HIGH RISK)
 - "source_change": instructions about a specific newsletter source (HIGH RISK)
@@ -242,7 +252,7 @@ def classify_reply_node(state: SupervisorState) -> dict:
     try:
         result = _classify_chain.invoke({"raw_reply": state["raw_reply"]})
         reply_type = result.get("reply_type", "irrelevant")
-        if reply_type not in {"acknowledge", "feedback", "both", "irrelevant", "command"}:
+        if reply_type not in {"acknowledge", "feedback", "both", "irrelevant", "command", "code_change_approval"}:
             log.warning("supervisor_classify_unexpected_type", reply_type=reply_type)
             reply_type = "irrelevant"
     except Exception as e:
@@ -336,6 +346,10 @@ def validate_change_node(state: SupervisorState) -> dict:
 
     if proposed_key in LOW_RISK_CONFIG_KEYS:
         risk_level = "low"
+    elif proposed_key == "source_reclassify":
+        risk_level = "source"
+    elif proposed_key == "unknown" and len(state.get("raw_reply", "")) > 50:
+        risk_level = "code_change"
     elif proposed_key == "unknown":
         risk_level = "none"
     else:
@@ -511,6 +525,99 @@ def execute_command_node(state: SupervisorState) -> dict:
     return {**state, "action_taken": new_action, "command_triggered": command_target}
 
 
+def reclassify_source_node(state: SupervisorState) -> dict:
+    """
+    Reclassify a newsletter source's type (news_brief or long_form) based on user feedback.
+    Validates type before calling DB. Self-logs via insert_feedback_event + mark_feedback_applied.
+    Returns to END after completion — no approval needed for source type corrections.
+    """
+    value = state.get("proposed_value") or {}
+    email = value.get("email", "") if isinstance(value, dict) else ""
+    stype = value.get("type", "") if isinstance(value, dict) else ""
+
+    if stype not in ("news_brief", "long_form"):
+        log.warning(
+            "supervisor_reclassify_invalid_type",
+            digest_id=state["digest_id"],
+            email=email,
+            stype=stype,
+        )
+        return {**state, "action_taken": "reclassify_skipped_invalid_type"}
+
+    from tools.db import update_source_type  # lazy import — Branch A owns this function
+    update_source_type(email, stype)
+
+    try:
+        event_id = insert_feedback_event(
+            digest_id=state["digest_id"],
+            raw_reply=state["raw_reply"],
+            supervisor_interpretation=f"reclassified {email} as {stype}",
+            proposed_change=json.dumps({"email": email, "type": stype}),
+        )
+        mark_feedback_applied(event_id)
+        log.info(
+            "supervisor_source_reclassified",
+            digest_id=state["digest_id"],
+            email=email,
+            stype=stype,
+            event_id=event_id,
+        )
+    except Exception as e:
+        log.warning("supervisor_reclassify_log_failed", digest_id=state["digest_id"], error=str(e))
+
+    return {**state, "action_taken": f"reclassified {email} as {stype}"}
+
+
+def trigger_code_change_node(state: SupervisorState) -> dict:
+    """
+    Spawn a daemon thread to run the CodeChangeAgent for structural/unknown feedback.
+    Non-blocking — returns immediately. The agent runs asynchronously in the background.
+    Lazy-imports run_code_change_agent so this module loads even before code_change_agent.py exists.
+    """
+    import threading
+    from supervisor.code_change_agent import run_code_change_agent  # lazy import
+
+    run_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=run_code_change_agent,
+        args=(state["raw_reply"], state["digest_id"], run_id),
+        daemon=True,
+    )
+    thread.start()
+    log.info("supervisor_code_change_triggered", digest_id=state["digest_id"], run_id=run_id)
+    return {**state, "action_taken": "triggered code_change_agent"}
+
+
+def approve_code_change_node(state: SupervisorState) -> dict:
+    """
+    Execute git push to deploy a previously staged code change.
+    Called when the user replies with "approve" or "approved" to a code change proposal email.
+    """
+    import subprocess
+    import os
+
+    cwd = os.getenv("RAILWAY_GIT_REPO_DIR", "/app")
+    result = subprocess.run(
+        ["git", "push"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=cwd,
+    )
+    if result.returncode == 0:
+        log.info("supervisor_code_change_approved", digest_id=state["digest_id"])
+        action = "git push succeeded"
+    else:
+        log.error(
+            "supervisor_code_change_push_failed",
+            digest_id=state["digest_id"],
+            stderr=result.stderr,
+        )
+        action = f"git push failed: {result.stderr.strip()}"
+
+    return {**state, "action_taken": action}
+
+
 # ---------------------------------------------------------------------------
 # Conditional routing functions
 # ---------------------------------------------------------------------------
@@ -519,10 +626,11 @@ def execute_command_node(state: SupervisorState) -> dict:
 def route_after_acknowledge(state: SupervisorState) -> str:
     """
     After maybe_acknowledge:
-    - feedback or both → extract_change (process the config request)
-    - acknowledge → END (done — digest acknowledged, no config change)
-    - command → extract_command (determine which pipeline to trigger)
-    - irrelevant → no_op
+    - feedback or both       → extract_change (process the config request)
+    - acknowledge            → END (done — digest acknowledged, no config change)
+    - command                → extract_command (determine which pipeline to trigger)
+    - code_change_approval   → approve_code_change (run git push)
+    - irrelevant             → no_op
     """
     reply_type = state.get("reply_type", "irrelevant")
     if reply_type in {"feedback", "both"}:
@@ -531,21 +639,29 @@ def route_after_acknowledge(state: SupervisorState) -> str:
         return END
     if reply_type == "command":
         return "extract_command"
+    if reply_type == "code_change_approval":
+        return "approve_code_change"
     return "no_op"
 
 
 def route_after_validate(state: SupervisorState) -> str:
     """
     After validation:
-    - low risk  → apply_change
-    - high risk → queue_change
-    - none      → no_op (unknown key, cannot act)
+    - low risk    → apply_change
+    - high risk   → queue_change
+    - source      → reclassify_source
+    - code_change → trigger_code_change
+    - none        → no_op (unknown key, cannot act)
     """
     risk_level = state.get("risk_level", "none")
     if risk_level == "low":
         return "apply_change"
     if risk_level == "high":
         return "queue_change"
+    if risk_level == "source":
+        return "reclassify_source"
+    if risk_level == "code_change":
+        return "trigger_code_change"
     return "no_op"
 
 
@@ -565,6 +681,9 @@ _builder.add_node("log_feedback_event", log_feedback_event_node)
 _builder.add_node("no_op", no_op_node)
 _builder.add_node("extract_command", extract_command_node)
 _builder.add_node("execute_command", execute_command_node)
+_builder.add_node("reclassify_source", reclassify_source_node)
+_builder.add_node("trigger_code_change", trigger_code_change_node)
+_builder.add_node("approve_code_change", approve_code_change_node)
 
 _builder.add_edge(START, "classify_reply")
 _builder.add_edge("classify_reply", "maybe_acknowledge")
@@ -577,6 +696,9 @@ _builder.add_edge("log_feedback_event", END)
 _builder.add_edge("no_op", END)
 _builder.add_edge("extract_command", "execute_command")
 _builder.add_edge("execute_command", END)
+_builder.add_edge("reclassify_source", END)
+_builder.add_edge("trigger_code_change", END)
+_builder.add_edge("approve_code_change", END)
 
 _graph = _builder.compile()
 

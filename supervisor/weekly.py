@@ -56,7 +56,13 @@ log = structlog.get_logger(__name__)
 # Constants — shared with immediate supervisor
 # ---------------------------------------------------------------------------
 
-LOW_RISK_CONFIG_KEYS = frozenset({"topic_weights", "word_budget", "cosine_similarity_threshold"})
+LOW_RISK_CONFIG_KEYS = frozenset({
+    "topic_weights",
+    "word_budget",
+    "cosine_similarity_threshold",
+    "synthesis_style_notes",   # new: JSON array of style instruction strings
+    "web_search_topics",       # new: JSON array of topic strings to search daily
+})
 
 # ---------------------------------------------------------------------------
 # LLM client — Opus for pattern analysis (complex reasoning, not classification)
@@ -132,6 +138,8 @@ Low-risk config keys you may apply immediately:
 - "topic_weights": object mapping topic → float weight (e.g. {{"ai": 1.5, "crypto": 0.3}})
 - "word_budget": object with budget keys (e.g. {{"daily_brief_total": 2500}})
 - "cosine_similarity_threshold": float 0.0–1.0
+- "synthesis_style_notes": JSON array of style instruction strings (e.g. ["write shorter stories", "use bullet points"])
+- "web_search_topics": JSON array of topic strings to search daily (e.g. ["markets", "sports", "geopolitics"])
 
 High-risk changes (require user approval — list in proposals, do NOT apply):
 - prompt edits, source changes, structural format changes, anything else

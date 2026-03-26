@@ -339,3 +339,109 @@ class TestFormatFeedbackSummary:
         result = _format_feedback_summary(events)
         assert "applied" in result
         assert "pending" in result or "queued" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: Branch C expansions — LOW_RISK_CONFIG_KEYS new entries (weekly)
+# ---------------------------------------------------------------------------
+
+
+class TestWeeklyLowRiskConfigKeysExpanded:
+    """Guard the new low-risk keys in the weekly supervisor."""
+
+    def test_synthesis_style_notes_in_low_risk_keys(self):
+        from supervisor.weekly import LOW_RISK_CONFIG_KEYS
+        assert "synthesis_style_notes" in LOW_RISK_CONFIG_KEYS
+
+    def test_web_search_topics_in_low_risk_keys(self):
+        from supervisor.weekly import LOW_RISK_CONFIG_KEYS
+        assert "web_search_topics" in LOW_RISK_CONFIG_KEYS
+
+    def test_original_keys_still_present(self):
+        from supervisor.weekly import LOW_RISK_CONFIG_KEYS
+        assert "topic_weights" in LOW_RISK_CONFIG_KEYS
+        assert "word_budget" in LOW_RISK_CONFIG_KEYS
+        assert "cosine_similarity_threshold" in LOW_RISK_CONFIG_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Tests: synthesis_style_notes applied via apply_changes_node (weekly)
+# ---------------------------------------------------------------------------
+
+
+class TestWeeklySynthesisStyleNotesApplied:
+    """synthesis_style_notes can be applied by the weekly supervisor via apply_changes_node."""
+
+    def test_synthesis_style_notes_applied_by_apply_changes_node(self):
+        """synthesis_style_notes change in low_risk_changes → set_config called."""
+        from supervisor.weekly import apply_changes_node
+        state = _make_state(low_risk_changes=[
+            {"key": "synthesis_style_notes", "value": ["write shorter stories"], "reason": "user wants brevity"}
+        ])
+        with (
+            patch("supervisor.weekly.set_config") as mock_set,
+            patch("supervisor.weekly.insert_feedback_event", return_value="evt-wk-sn-1"),
+            patch("supervisor.weekly.mark_feedback_applied"),
+        ):
+            result = apply_changes_node(state)
+
+        mock_set.assert_called_once_with(
+            "synthesis_style_notes",
+            ["write shorter stories"],
+            updated_by="supervisor",
+        )
+        assert result["changes_applied"] == {"synthesis_style_notes": ["write shorter stories"]}
+
+    def test_web_search_topics_applied_by_apply_changes_node(self):
+        """web_search_topics change in low_risk_changes → set_config called."""
+        from supervisor.weekly import apply_changes_node
+        state = _make_state(low_risk_changes=[
+            {"key": "web_search_topics", "value": ["markets", "sports"], "reason": "expand coverage"}
+        ])
+        with (
+            patch("supervisor.weekly.set_config") as mock_set,
+            patch("supervisor.weekly.insert_feedback_event", return_value="evt-wk-wst-1"),
+            patch("supervisor.weekly.mark_feedback_applied"),
+        ):
+            result = apply_changes_node(state)
+
+        mock_set.assert_called_once_with(
+            "web_search_topics",
+            ["markets", "sports"],
+            updated_by="supervisor",
+        )
+        assert result["changes_applied"] == {"web_search_topics": ["markets", "sports"]}
+
+    def test_synthesis_style_notes_in_full_weekly_run(self):
+        """Full weekly run: synthesis_style_notes in analysis output → applied, in changes_applied."""
+        with (
+            patch("supervisor.weekly.get_weekly_digest_stats", return_value=[_make_digest()]),
+            patch("supervisor.weekly.get_recent_feedback", return_value=[]),
+            patch("supervisor.weekly._analyze_chain") as mock_chain,
+            patch("supervisor.weekly.set_config") as mock_set,
+            patch("supervisor.weekly.insert_feedback_event", return_value="evt-wk-full-1"),
+            patch("supervisor.weekly.mark_feedback_applied"),
+            patch("gmail_service.GmailService") as mock_gmail_cls,
+        ):
+            mock_chain.invoke.return_value = {
+                "observations": ["User wants shorter stories"],
+                "low_risk_changes": [
+                    {
+                        "key": "synthesis_style_notes",
+                        "value": ["write shorter stories"],
+                        "reason": "user requested brevity",
+                    }
+                ],
+                "high_risk_proposals": [],
+            }
+            mock_gmail_cls.return_value = MagicMock()
+
+            from supervisor.weekly import run_weekly_supervisor
+            result = run_weekly_supervisor("run-weekly-style")
+
+        mock_set.assert_called_once_with(
+            "synthesis_style_notes",
+            ["write shorter stories"],
+            updated_by="supervisor",
+        )
+        assert result.changes_applied == {"synthesis_style_notes": ["write shorter stories"]}
