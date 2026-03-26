@@ -4,6 +4,7 @@
 
 [build]
 builder = "nixpacks"
+buildCommand = "pip install -r requirements.txt && cd web && npm install --legacy-peer-deps && npm run build && cd .. && cp -r web/dist static"
 
 [deploy]
 startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
