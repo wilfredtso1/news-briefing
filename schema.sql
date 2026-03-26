@@ -195,4 +195,6 @@ INSERT INTO agent_config (key, value, updated_by) VALUES
         "top_brief_count": 10
     }', 'system'),
     ('cosine_similarity_threshold', '0.82', 'system'),
-    ('deep_read_threshold', '5', 'system');
+    ('deep_read_threshold', '5', 'system'),
+    ('synthesis_style_notes', '[]', 'system'),
+    ('web_search_topics', '[]', 'system');
