@@ -15,19 +15,91 @@ Utility:
   GET /health              — health check (used by Railway)
 """
 
+import hmac
+import hashlib
+import base64
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Optional
+from urllib.parse import urlencode
 
+import httpx
 import structlog
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from itsdangerous import URLSafeSerializer
+from pydantic import BaseModel
 
 # Config is validated at import time — crashes immediately if env vars are missing
 from config import settings  # noqa: F401
 from tools.alerts import send_alert
 
 log = structlog.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+def _get_signer() -> URLSafeSerializer:
+    if not settings.session_secret_key:
+        raise HTTPException(status_code=503, detail="SESSION_SECRET_KEY not configured")
+    return URLSafeSerializer(settings.session_secret_key)
+
+
+def _sign_session(user_id: str) -> str:
+    return _get_signer().dumps(str(user_id))
+
+
+def _require_session(request: Request) -> dict:
+    """Return the user dict for the session cookie, or raise 401."""
+    from tools.db import get_user_by_id
+    token = request.cookies.get("session")
+    if not token:
+        raise HTTPException(status_code=401)
+    try:
+        user_id = _get_signer().loads(token)
+    except Exception:
+        raise HTTPException(status_code=401)
+    user = get_user_by_id(user_id)
+    if not user or user["status"] == "deleted":
+        raise HTTPException(status_code=401)
+    return user
+
+
+def _make_unsubscribe_token(user_id: str) -> str:
+    """Return a URL-safe signed token embedding the user_id."""
+    if not settings.unsubscribe_secret_key:
+        raise RuntimeError("UNSUBSCRIBE_SECRET_KEY not configured")
+    sig = hmac.new(
+        settings.unsubscribe_secret_key.encode(),
+        user_id.encode(),
+        hashlib.sha256,
+    ).digest()
+    payload = f"{user_id}:{base64.b64encode(sig).decode()}"
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def _verify_unsubscribe_token(token: str) -> str:
+    """Decode and verify an unsubscribe token. Returns user_id or raises 400."""
+    if not settings.unsubscribe_secret_key:
+        raise HTTPException(status_code=503, detail="UNSUBSCRIBE_SECRET_KEY not configured")
+    try:
+        payload = base64.urlsafe_b64decode(token.encode()).decode()
+        user_id, sig_b64 = payload.rsplit(":", 1)
+        sig = base64.b64decode(sig_b64.encode())
+        expected = hmac.new(
+            settings.unsubscribe_secret_key.encode(),
+            user_id.encode(),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(sig, expected):
+            raise ValueError("invalid signature")
+        return user_id
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or expired unsubscribe token")
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +119,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+class SetupRequest(BaseModel):
+    delivery_email: str
+    timezone: str
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +414,7 @@ def _check_inbox_commands(run_id: str, gmail) -> None:
     """
     from supervisor.immediate import classify_command
 
-    query = f"from:{settings.gmail_send_as} to:{settings.gmail_send_as} is:unread"
+    query = f"from:{settings.gmail_send_as} to:{settings.gmail_send_as} in:inbox"
     try:
         command_messages = gmail.list_messages_with_query(query, max_results=10)
     except Exception as e:
