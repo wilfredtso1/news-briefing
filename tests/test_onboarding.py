@@ -443,3 +443,143 @@ class TestFormatSetupEmail:
         }
         body = _format_setup_email(discovered)
         assert body.index("Aardvark") < body.index("Zebra")
+
+    def test_includes_instruction_to_move_sources_between_lists(self):
+        """4th bullet must tell user they can move sources between Daily Brief and Long-Form."""
+        discovered = {
+            "axiosam@axios.com": {"name": "Axios AM", "type": "news_brief"},
+            "newsletters@stratechery.com": {"name": "Stratechery", "type": "long_form"},
+        }
+        body = _format_setup_email(discovered)
+        assert "Move any source between" in body or "move any source between" in body.lower()
+
+
+# ---------------------------------------------------------------------------
+# process_onboarding_reply — source_type_corrections
+# ---------------------------------------------------------------------------
+
+class TestProcessOnboardingReplySourceTypeCorrections:
+    def test_calls_update_source_type_for_valid_correction(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "source_type_corrections": [
+                {"email": "crew@morningbrew.com", "type": "news_brief"}
+            ],
+            "notes": "morning brew should be in brief",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"), \
+             patch("pipeline.onboarding.update_source_type") as mock_update_type:
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "Morning Brew should be in brief", "run_001")
+
+        mock_update_type.assert_called_once_with("crew@morningbrew.com", "news_brief")
+        assert any("reclassified" in c for c in result["applied_changes"])
+
+    def test_calls_update_source_type_for_each_valid_correction(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "source_type_corrections": [
+                {"email": "crew@morningbrew.com", "type": "news_brief"},
+                {"email": "newsletters@stratechery.com", "type": "long_form"},
+            ],
+            "notes": "two corrections",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"), \
+             patch("pipeline.onboarding.update_source_type") as mock_update_type:
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "corrections", "run_001")
+
+        assert mock_update_type.call_count == 2
+
+    def test_invalid_type_string_silently_skipped(self, active_sources):
+        """A correction with an invalid type must be silently skipped — no crash, no DB call."""
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "source_type_corrections": [
+                {"email": "crew@morningbrew.com", "type": "invalid_type"}
+            ],
+            "notes": "bad type",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"), \
+             patch("pipeline.onboarding.update_source_type") as mock_update_type:
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "bad correction", "run_001")
+
+        mock_update_type.assert_not_called()
+        # Should complete without raising
+        assert "applied_changes" in result
+
+    def test_empty_type_string_silently_skipped(self, active_sources):
+        """A correction with an empty type must be silently skipped."""
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "source_type_corrections": [
+                {"email": "crew@morningbrew.com", "type": ""}
+            ],
+            "notes": "empty type",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"), \
+             patch("pipeline.onboarding.update_source_type") as mock_update_type:
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "empty type", "run_001")
+
+        mock_update_type.assert_not_called()
+
+    def test_no_source_type_corrections_key_does_not_crash(self, active_sources):
+        """When source_type_corrections is absent from parsed output, no crash occurs."""
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "no corrections key",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"), \
+             patch("pipeline.onboarding.update_source_type") as mock_update_type:
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "no corrections", "run_001")
+
+        mock_update_type.assert_not_called()
+        assert "applied_changes" in result

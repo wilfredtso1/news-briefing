@@ -131,6 +131,16 @@ def update_source_trust_weight(sender_email: str, trust_weight: float) -> None:
     log.info("source_trust_weight_updated", sender_email=sender_email, trust_weight=trust_weight)
 
 
+def update_source_type(sender_email: str, source_type: str) -> None:
+    """Update a source's type classification. Called by supervisor and onboarding."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE newsletter_sources SET type = %s WHERE sender_email = %s",
+            (source_type, sender_email),
+        )
+    log.info("source_type_updated", sender_email=sender_email, source_type=source_type)
+
+
 # ---------------------------------------------------------------------------
 # digests
 # ---------------------------------------------------------------------------

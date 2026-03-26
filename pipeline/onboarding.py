@@ -37,6 +37,7 @@ from tools.db import (
     set_config,
     update_onboarding_thread,
     update_source_trust_weight,
+    update_source_type,
 )
 
 log = structlog.get_logger(__name__)
@@ -84,6 +85,7 @@ Return JSON only:
   "deprioritize_sources": ["email@example.com"],
   "unsubscribe_sources": ["email@example.com"],
   "topic_adjustments": {{"topic_name": 1.5}},
+  "source_type_corrections": [{{"email": "sender@domain.com", "type": "news_brief|long_form"}}],
   "notes": "one sentence summary"
 }}
 
@@ -94,6 +96,8 @@ Rules:
 - unsubscribe_sources: sources the user explicitly asked to stop receiving (must be explicit)
 - topic_adjustments: float multipliers for topic weights (>1.0 = boost, <1.0 = reduce)
   Valid topic keys: ai, health_tech, venture_capital, financial_markets, tech, crypto, sports, entertainment
+- source_type_corrections: use this if the user moves a source between Daily Brief and Long-Form lists
+  type must be exactly "news_brief" or "long_form"
 - "I don't care about X" → deprioritize, NOT unsubscribe. Only use unsubscribe for explicit removal requests.
 - If the reply is vague or gives no actionable preferences, return empty lists and an empty dict.""",
     ),
@@ -232,6 +236,18 @@ def process_onboarding_reply(event_id: str, raw_reply: str, run_id: str) -> dict
         except Exception as e:
             log.warning("onboarding_deprioritize_failed", run_id=run_id, email=email, error=str(e))
 
+    for correction in parsed.get("source_type_corrections", []):
+        email = correction.get("email", "")
+        stype = correction.get("type", "")
+        if stype not in ("news_brief", "long_form"):
+            log.warning("onboarding_invalid_type_correction", email=email, type=stype)
+            continue
+        try:
+            update_source_type(email, stype)
+            applied.append(f"reclassified {email} as {stype}")
+        except Exception as e:
+            log.warning("onboarding_type_correction_failed", email=email, error=str(e))
+
     # Log unsubscribe requests but do NOT execute — requires separate confirmation
     for email in parsed.get("unsubscribe_sources", []):
         log.info(
@@ -298,6 +314,7 @@ def _format_setup_email(discovered: dict[str, dict]) -> str:
         "1. Your most important sources (I'll prioritize these in every digest)",
         "2. Anything to deprioritize or less of",
         "3. Any topic preferences (e.g. \"more AI, less crypto\")",
+        "4. Move any source between the two lists if I got it wrong (e.g. \"Morning Brew should be in Daily Brief\")",
         "",
         "The first daily brief runs after I hear back.",
     ]

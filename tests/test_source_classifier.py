@@ -5,10 +5,11 @@ All tests are pure — no DB calls, no network, no filesystem.
 DB side-effects (_register) are mocked so tests remain isolated.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from gmail_service import EmailMessage
 from source_classifier import (
     ClassificationResult,
     _classify_type_by_length,
@@ -180,3 +181,114 @@ class TestAnchorDetection:
     def test_all_anchors_present_empty_inbox(self):
         anchors = ("axiosam@axios.com", "morningbrew@morningbrew.com")
         assert all_anchors_present([], anchors) is False
+
+
+# ---------------------------------------------------------------------------
+# New KNOWN_NEWS_BRIEF_SENDERS — crew@morningbrew.com and markets@axios.com
+# ---------------------------------------------------------------------------
+
+def _make_email(sender_email: str, body_text: str = "") -> EmailMessage:
+    """Helper to build a minimal EmailMessage for classification tests."""
+    return EmailMessage(
+        message_id="msg_test",
+        thread_id="thread_test",
+        subject="Test",
+        sender=f"Test <{sender_email}>",
+        sender_email=sender_email,
+        body_text=body_text,
+        body_html="",
+        list_unsubscribe="<https://example.com/unsub>",
+        list_id=None,
+        date="Wed, 26 Mar 2026 06:00:00 -0500",
+        labels=["INBOX", "UNREAD"],
+    )
+
+
+class TestNewKnownSenders:
+    def test_crew_morningbrew_is_news_brief_regardless_of_body_length(self):
+        """crew@morningbrew.com must be classified as news_brief even with a long body."""
+        long_body = "word " * 3_000  # well above LONG_FORM_WORD_THRESHOLD
+        msg = _make_email("crew@morningbrew.com", long_body)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email") as mock_db:
+            result = classify(msg)
+        # DB lookup must NOT be called — known sender short-circuits before DB check
+        mock_db.assert_not_called()
+        assert result.is_newsletter is True
+        assert result.source_type == "news_brief"
+        assert result.confidence == "high"
+
+    def test_markets_axios_is_news_brief(self):
+        """markets@axios.com must be classified as news_brief."""
+        msg = _make_email("markets@axios.com", "word " * 100)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email") as mock_db:
+            result = classify(msg)
+        mock_db.assert_not_called()
+        assert result.is_newsletter is True
+        assert result.source_type == "news_brief"
+
+
+# ---------------------------------------------------------------------------
+# DB lookup behaviour
+# ---------------------------------------------------------------------------
+
+class TestDbLookup:
+    def test_db_returning_news_brief_overrides_long_body_heuristic(self):
+        """A long-body email from an unknown sender with DB type=news_brief stays news_brief."""
+        long_body = "word " * 3_000
+        msg = _make_email("unknown@newsletter.com", long_body)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email", return_value={"type": "news_brief"}):
+            result = classify(msg)
+        assert result.source_type == "news_brief"
+        assert result.confidence == "high"
+        assert "DB override" in result.reason
+
+    def test_db_returning_long_form_overrides_short_body_heuristic(self):
+        """A short-body email from an unknown sender with DB type=long_form becomes long_form."""
+        short_body = "word " * 100
+        msg = _make_email("unknown@newsletter.com", short_body)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email", return_value={"type": "long_form"}):
+            result = classify(msg)
+        assert result.source_type == "long_form"
+        assert result.confidence == "high"
+
+    def test_db_returning_none_falls_through_to_heuristic(self):
+        """When DB returns None the heuristic runs normally."""
+        short_body = "word " * 100
+        msg = _make_email("unknown@newsletter.com", short_body)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email", return_value=None):
+            result = classify(msg)
+        # Short body → heuristic says news_brief
+        assert result.source_type == "news_brief"
+        assert "DB override" not in result.reason
+
+    def test_db_exception_falls_through_to_heuristic_no_crash(self):
+        """A DB exception must not crash the classifier; heuristic runs as fallback."""
+        short_body = "word " * 100
+        msg = _make_email("unknown@newsletter.com", short_body)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email", side_effect=Exception("DB down")):
+            result = classify(msg)
+        # Should still classify via heuristic — no exception raised
+        assert result.is_newsletter is True
+        assert result.source_type == "news_brief"
+
+    def test_db_not_called_for_known_news_brief_sender(self):
+        """DB lookup must be skipped entirely when sender is in KNOWN_NEWS_BRIEF_SENDERS."""
+        msg = _make_email("axiosam@axios.com", "word " * 100)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email") as mock_db:
+            classify(msg)
+        mock_db.assert_not_called()
+
+    def test_db_not_called_for_known_long_form_sender(self):
+        """DB lookup must be skipped entirely when sender is in KNOWN_LONG_FORM_SENDERS."""
+        msg = _make_email("newsletters@stratechery.com", "word " * 100)
+        with patch("source_classifier._register"), \
+             patch("source_classifier.get_source_by_email") as mock_db:
+            classify(msg)
+        mock_db.assert_not_called()

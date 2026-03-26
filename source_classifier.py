@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import structlog
 
 from gmail_service import EmailMessage
-from tools.db import upsert_newsletter_source
+from tools.db import get_source_by_email, upsert_newsletter_source
 
 log = structlog.get_logger(__name__)
 
@@ -40,6 +40,8 @@ KNOWN_NEWS_BRIEF_SENDERS = {
     "hello@tldr.tech",
     "newsletters@a16z.com",
     "hello@healthtechnerds.com",
+    "crew@morningbrew.com",    # Morning Brew — long body but is a news brief
+    "markets@axios.com",       # Axios Markets
 }
 
 # Senders we know are long_form
@@ -108,6 +110,21 @@ def classify(message: EmailMessage) -> ClassificationResult:
         )
         _register(message, result)
         return result
+
+    # --- DB lookup: check for user-confirmed type before running length heuristic ---
+    try:
+        existing = get_source_by_email(sender)
+        if existing and existing.get("type") in ("news_brief", "long_form"):
+            result = ClassificationResult(
+                is_newsletter=True, source_type=existing["type"], sender_email=sender,
+                sender_name=sender_name, confidence="high",
+                reason=f"DB override: user-confirmed type={existing['type']}",
+            )
+            _register(message, result)
+            return result
+    except Exception as e:
+        log.warning("classifier_db_lookup_failed", sender=sender, error=str(e))
+        # Fall through to heuristic
 
     # --- List-Unsubscribe header (strong signal — legally required on bulk mail) ---
     if message.list_unsubscribe:
