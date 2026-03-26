@@ -707,17 +707,20 @@ import os as _os
 from pathlib import Path as _Path
 from fastapi.responses import FileResponse as _FileResponse
 
-if _os.path.isdir("static"):
-    # Mount asset directories so their files are served directly
+# Absolute path to static/ relative to this file — works regardless of CWD
+_STATIC_DIR = _Path(__file__).parent / "static"
+
+if _STATIC_DIR.is_dir():
+    # Mount asset subdirectories for direct file serving
     for _subdir in ("assets", "fonts", "images"):
-        _dir = _Path("static") / _subdir
-        if _dir.is_dir():
-            app.mount(f"/{_subdir}", StaticFiles(directory=str(_dir)), name=_subdir)
+        _subdir_path = _STATIC_DIR / _subdir
+        if _subdir_path.is_dir():
+            app.mount(f"/{_subdir}", StaticFiles(directory=str(_subdir_path)), name=_subdir)
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """Serve static files by path; fall back to index.html for SPA routes."""
-        candidate = _Path("static") / full_path
+        """Serve static files by path; fall back to index.html for all SPA routes."""
+        candidate = _STATIC_DIR / full_path
         if candidate.is_file():
-            return _FileResponse(candidate)
-        return _FileResponse("static/index.html")
+            return _FileResponse(str(candidate))
+        return _FileResponse(str(_STATIC_DIR / "index.html"))
