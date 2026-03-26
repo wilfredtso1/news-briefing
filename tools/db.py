@@ -202,6 +202,20 @@ def mark_digest_acknowledged(digest_id: str) -> None:
     log.info("digest_acknowledged", digest_id=digest_id)
 
 
+def was_brief_sent_today(digest_type: str = "daily_brief") -> bool:
+    """
+    Return True if a digest of the given type was already sent today (UTC).
+    Used to prevent duplicate sends when the cron polls multiple times after
+    the pipeline has already run and archived the source newsletters.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT 1 FROM digests WHERE type = %s AND sent_at >= CURRENT_DATE LIMIT 1",
+            (digest_type,),
+        )
+        return cur.fetchone() is not None
+
+
 def get_unacknowledged_digests(digest_type: str = "daily_brief", days_back: int = 7) -> list[dict]:
     """
     Return sent but unacknowledged digests within the lookback window.

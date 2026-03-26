@@ -594,12 +594,46 @@ class TestRunDailyBriefAnchorCutoff:
 
         mock_run.assert_not_called()
 
+    def test_already_sent_today_skips_pipeline(self):
+        """If a brief was already sent today, skip — prevents duplicate sends."""
+        _run_daily_brief = self._import_run()
+
+        with (
+            patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=True),
+            patch("gmail_service.GmailService") as mock_gmail_cls,
+            patch("pipeline.daily_brief.run") as mock_run,
+        ):
+            _run_daily_brief(run_id="test-run")
+
+        mock_run.assert_not_called()
+        mock_gmail_cls.assert_not_called()
+
+    def test_not_yet_sent_today_proceeds_to_anchor_check(self):
+        """If no brief sent today, continue to anchor check."""
+        _run_daily_brief = self._import_run()
+
+        with (
+            patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=False),
+            patch("gmail_service.GmailService") as mock_gmail_cls,
+            patch("pipeline.daily_brief.run") as mock_run,
+        ):
+            gmail = MagicMock()
+            gmail.check_anchor_sources_present.return_value = True
+            mock_gmail_cls.return_value = gmail
+
+            _run_daily_brief(run_id="test-run")
+
+        mock_run.assert_called_once_with(run_id="test-run")
+
     def test_anchors_not_ready_before_cutoff_skips_pipeline(self):
         """If anchors not present and current hour < cutoff → skip."""
         _run_daily_brief = self._import_run()
 
         with (
             patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=False),
             patch("gmail_service.GmailService") as mock_gmail_cls,
             patch("pipeline.daily_brief.run") as mock_run,
             patch("main.datetime") as mock_dt,
@@ -619,6 +653,7 @@ class TestRunDailyBriefAnchorCutoff:
 
         with (
             patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=False),
             patch("gmail_service.GmailService") as mock_gmail_cls,
             patch("pipeline.daily_brief.run") as mock_run,
             patch("main.datetime") as mock_dt,
@@ -638,6 +673,7 @@ class TestRunDailyBriefAnchorCutoff:
 
         with (
             patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=False),
             patch("gmail_service.GmailService") as mock_gmail_cls,
             patch("pipeline.daily_brief.run") as mock_run,
             patch("main.datetime") as mock_dt,
@@ -657,6 +693,7 @@ class TestRunDailyBriefAnchorCutoff:
 
         with (
             patch("tools.db.get_config", return_value=True),
+            patch("tools.db.was_brief_sent_today", return_value=False),
             patch("gmail_service.GmailService") as mock_gmail_cls,
             patch("pipeline.daily_brief.run") as mock_run,
         ):

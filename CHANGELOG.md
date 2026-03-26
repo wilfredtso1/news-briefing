@@ -4,9 +4,11 @@
 
 ### Fixed
 - **Daily brief never ran past anchor wait** — `anchor_cutoff_hour` was configured but never checked. If Axios AM or Morning Brew didn't arrive, the brief silently skipped every poll cycle including the 10am hard cutoff. `_run_daily_brief()` now compares `datetime.now().hour` against `settings.anchor_cutoff_hour` and runs the pipeline unconditionally once the cutoff is reached.
+- **Duplicate daily brief possible after pipeline already ran** — after the pipeline archived newsletters, subsequent polls would find no anchors, hit the cutoff, and re-enter the pipeline (returning quickly as `no_newsletters`, but wasted work). Added `was_brief_sent_today()` guard — `_run_daily_brief()` now returns immediately if a daily_brief digest was already sent today.
 
 ### Added
-- **`tests/test_daily_brief.py`** — 24 new tests covering the full pipeline (previously had 0 tests):
+- **`tools/db.py`: `was_brief_sent_today()`** — checks if a digest of a given type was sent today (UTC). Used to prevent duplicate pipeline runs after the first succeeds.
+- **`tests/test_daily_brief.py`** — 27 tests covering the full pipeline (previously had 0 tests):
   - Happy path: email sent, newsletters archived, digest persisted to DB
   - Early returns: no messages, no newsletters, no stories
   - Resilience: single-newsletter extraction failure skips that newsletter, pipeline continues

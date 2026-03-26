@@ -312,18 +312,23 @@ Cron jobs are separate Railway services. Create each in the Railway dashboard as
 
 Set `WEB_SERVICE_URL` as a shared env var (the public URL of the web service).
 
-| Service name | Cron schedule | Start command |
-|---|---|---|
-| `daily-brief` | `*/15 6-10 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/daily-brief` |
-| `poll-replies` | `*/15 * * * *` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/poll-replies` |
-| `deep-read` | `0 9 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/deep-read` |
-| `weekend-catchup` | `0 8 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/weekend-catchup` |
-| `supervisor-weekly` | `0 7 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/supervisor-weekly` |
+### Current status (as of 2026-03-26)
+
+| Service name | Cron schedule | Start command | Status |
+|---|---|---|---|
+| `daily-brief` | `*/15 6-10 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/daily-brief` | **⚠ Not created** |
+| `poll-replies` | `*/15 * * * *` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/poll-replies` | Created, **no start command** |
+| `deep-read` | `0 9 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/deep-read` | Created, **no start command** |
+| `weekend-catchup` | `0 8 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/weekend-catchup` | **⚠ Not created** |
+| `supervisor-weekly` | `0 7 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/supervisor-weekly` | Created, **no start command** |
+
+**Action required**: Create `daily-brief` and `weekend-catchup` in Railway dashboard. For `poll-replies`, `deep-read`, `supervisor-weekly`: add the start command above in each service's settings. Also set `ALERT_EMAIL` on the web service so pipeline failures surface as email alerts.
 
 Notes:
-- `daily-brief` polls every 15 min Mon–Fri from 6–10am. The pipeline checks anchor sources before running and exits early if they haven't arrived.
+- `daily-brief` polls every 15 min Mon–Fri from 6–10am. The pipeline checks anchor sources before running, and exits early if the brief was already sent today (`was_brief_sent_today()` guard prevents duplicate sends after archiving).
 - `supervisor-weekly` runs at 7am Sunday — before `weekend-catchup` at 8am — so the review email reflects a complete week.
 - All env vars (see Environment Variables section) must be set on the web service. Cron services only need `WEB_SERVICE_URL`.
+- **`ALERT_EMAIL` is not currently set** — without it, pipeline failures are silently logged but never emailed. Set it to your address in Railway environment variables.
 
 ---
 
@@ -761,13 +766,81 @@ The most common failure modes of AI-generated code. Actively guard against all o
 
 ---
 
+## Architectural Layer Boundaries
+
+This project has a strict dependency hierarchy. Layers may only import from layers below them. No layer may import from a layer above it. No circular imports.
+
+```
+schema.sql          ← data shape definitions (no Python imports)
+       ↓
+tools/db.py         ← DB helpers only; no pipeline or supervisor imports
+       ↓
+pipeline/*.py       ← pipeline steps; imports from tools/ only
+       ↓
+supervisor/*.py     ← supervisor + agents; imports from tools/ and pipeline/
+       ↓
+main.py             ← FastAPI app; imports and orchestrates all layers
+```
+
+**Hard rules:**
+- `pipeline/` modules must never import from `supervisor/`
+- `tools/db.py` must never import from `pipeline/` or `supervisor/`
+- Pipeline steps do not call each other directly — orchestration happens in `daily_brief.py`, `deep_read.py`, `weekend_catchup.py`
+- Shared logic needed by multiple layers belongs in `tools/`, not copy-pasted across files
+
+Violations are architectural debt. If you find one, fix it immediately and log it in DECISIONS.md. If a boundary needs to change, log that decision before changing it.
+
+---
+
+## Consistency Sweeps
+
+At the end of any significant work session — or any time a task spans multiple files — run this sweep before presenting work as complete. It catches drift that accumulates silently between code, docs, and configuration.
+
+**Sweep checklist:**
+
+1. **TODO drift** — Are all items in `TODO.md` still valid? Any inline `# TODO` in code without a matching `TODO.md` entry?
+2. **Dead imports** — Any `import` statements for modules not referenced in the file?
+3. **Dead code** — Any functions, classes, or variables defined but never called?
+4. **`.env.example` sync** — Does every `os.environ.get()`/`os.getenv()` call have an entry in `.env.example`? Any `.env.example` entries no longer used in code?
+5. **Schema sync** — Does `schema.sql` match what `db.py` queries? Any column referenced in code that doesn't exist in schema?
+6. **DECISIONS.md references** — Do all `ref: DECISIONS.md` comments in code point to real, non-superseded entries?
+7. **CHANGELOG currency** — Has any user-facing behavior changed without a CHANGELOG entry?
+
+Fix what you find inline. Log anything requiring a non-trivial decision in DECISIONS.md.
+
+---
+
+## Post-Write Simplify Loop
+
+After writing or modifying any code — regardless of scope — run this loop before the self-review checklist. This step is not optional and is not a follow-up: it is part of the implementation.
+
+### The loop
+
+1. **Scan for reuse.** Is any logic already implemented in `db.py`, existing pipeline steps, or existing helpers? If yes, use the existing implementation — do not duplicate.
+2. **Scan for duplication.** Is any block of code repeated or near-repeated within the new code? Extract it.
+3. **Check efficiency.** N+1 queries? Unnecessary LLM calls? Sequential DB writes that could be batched? Fix them.
+4. **Check size.** Any function over 30 lines? Any file over 300 lines? If yes, split.
+5. **Check necessity.** Is every line necessary for the stated requirement? Delete anything that isn't.
+
+**If any issues were found and fixed: run the loop again from step 1.**
+
+**Stop only when a full pass finds nothing.** Then proceed to the 15-item self-review checklist.
+
+### Why this is a loop, not a one-time pass
+
+Fixing one issue often reveals another. A function extracted in step 2 may reveal a reuse opportunity (step 1). A deletion in step 5 may allow a simplification in step 3. The loop terminates when a complete pass finds nothing new — not after a single pass.
+
+---
+
 ## Workflow
 
 1. **Understand** — Read the request. Read relevant existing code. Read SPEC.md, CLAUDE.md (both parts), DECISIONS.md, TODO.md. Ask clarifying questions if requirements are ambiguous. Do not guess.
 2. **Plan** — State your approach before writing code. For changes touching >3 files, outline which files change and why. For non-trivial decisions, draft the DECISIONS.md entry *before* writing code.
 3. **Implement** — Write the code, the tests, and the documentation together.
-4. **Self-review** — Run the full review checklist. Fix issues before presenting.
-5. **Present** — Show final code with: summary of changes, test results, doc updates, open concerns.
+4. **Simplify loop** — Run the Post-Write Simplify Loop above. Fix what you find. Re-run. Repeat until the loop produces no findings. This is a blocking step.
+5. **Consistency sweep** — Run the Consistency Sweeps checklist. Fix drift in docs, imports, `.env.example`, schema references. Log decisions where needed.
+6. **Self-review** — Run the full 15-item review checklist. Fix issues before presenting.
+7. **Present** — Show final code with: summary of changes, test results, doc updates, open concerns.
 
 If you realize the approach is wrong, say so immediately. Rework is cheaper than tech debt.
 

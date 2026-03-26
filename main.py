@@ -398,6 +398,11 @@ def _run_daily_brief(run_id: str) -> None:
             log.info("daily_brief_skipped_onboarding_incomplete", run_id=run_id)
             return
 
+        from tools.db import was_brief_sent_today
+        if was_brief_sent_today():
+            log.info("daily_brief_skipped_already_sent_today", run_id=run_id)
+            return
+
         gmail = GmailService()
         anchors_ready = gmail.check_anchor_sources_present(settings.anchor_sources)
         if not anchors_ready:
