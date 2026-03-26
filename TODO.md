@@ -1,25 +1,14 @@
 # TODO
 
-## Integration Sprint — Now Unblocked
+## Remaining Pre-Production Work
 
-- [ ] Merge order: phase-5-infra → phase-3-supervisor → phase-4-pipelines (into main)
-- [ ] Thread `@traced` / `with_retry` / `send_alert` through daily_brief.py, weekend_catchup.py, deep_read.py, _run_poll_replies
-- [ ] Schema migration: add `thread_id` and `sent_message_id` columns to `digests` table (needed by `_run_poll_replies`)
-- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto, update source status (was out of scope for Phase 3 agent)
-- [ ] E2E test Phase 3 supervisor against real Gmail reply thread
-- [ ] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB with `@pytest.mark.e2e`
-
-## Blocked on integration sprint completion
-
-- [ ] `supervisor/weekly.py` — LangGraph weekly pattern sweep (needs real feedback_events in DB)
+- [ ] Run `migrations/001_digests_add_thread_fields.sql` against Supabase — adds thread_id + sent_message_id to digests table
+- [ ] E2E smoke test: daily_brief against real Gmail inbox in dry-run mode (needs live credentials)
+- [ ] E2E test Phase 3 supervisor against real Gmail reply thread (needs live credentials)
+- [ ] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB — `@pytest.mark.e2e`
+- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto, update source status in DB
+- [ ] `supervisor/weekly.py` — LangGraph weekly pattern sweep (needs real feedback_events in DB first)
 - [ ] Railway deployment config + cron schedule setup
-- [ ] Integration sprint: thread tracing/retry/alerts through all pipelines and endpoints
-
-## High Priority — Now
-
-- [ ] End-to-end smoke test: run pipeline against real inbox in dry-run mode
-- [ ] Verify anchor sender emails in `.env` match exact Axios AM sender address (check Gmail)
-- [ ] Run `schema.sql` against Supabase if not yet done
 
 ## Low Priority / Nice to Have
 
@@ -29,6 +18,7 @@
 
 ## Completed
 
+- [x] Integration sprint: branch merges, schema migration, thread wiring, tracing/retry/alerts — 2026-03-26
 - [x] Phase 3 supervisor reviewed, 64/64 tests passing, pushed to phase-3-supervisor — 2026-03-26
 - [x] Phase 4 pipelines reviewed, tests fixed, 60/60 passing, pushed to phase-4-pipelines — 2026-03-26
 - [x] Phase 5 infra reviewed, dead code removed from retry.py, 60/60 passing, pushed to phase-5-infra — 2026-03-26
