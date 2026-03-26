@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- Phase 3 immediate supervisor: real-time reply processing via LangGraph graph that classifies replies (acknowledge/feedback/both/irrelevant), applies low-risk config changes immediately (topic_weights, word_budget, cosine_similarity_threshold), and queues high-risk changes (prompt edits, unsubscribe requests) in feedback_events for human review
+- `supervisor/immediate.py` — LangGraph StateGraph with nodes: classify_reply (Haiku), maybe_acknowledge, extract_change (Haiku), validate_change, apply_change, queue_change, log_feedback_event; conditional routing by reply type and risk level
+- `supervisor/__init__.py` — exports SupervisorResult dataclass and run_immediate_supervisor
+- `main.py` `_run_poll_replies()` — polls unacknowledged digests for Gmail thread replies, runs each reply through the immediate supervisor graph; single-reply failures are non-fatal
+- `tests/test_supervisor_immediate.py` — 40+ unit and integration tests covering all reply types, risk classifications, DB failure modes, and LLM failure fallbacks
+
 - Phase 2 core pipeline: full daily brief pipeline from email fetch → extraction → embedding → disambiguation → synthesis → enrichment → ranking → formatting → delivery
 - `pipeline/extractor.py` — LCEL chain (claude-haiku-4-5) extracts structured stories from newsletter HTML/text; graceful failure per-newsletter with pipeline continuing
 - `pipeline/embedder.py` — Voyage AI voyage-3 embeddings with greedy cosine-similarity clustering; cross-day dedup against recent digest embeddings; ambiguous pairs flagged for LangGraph resolution

@@ -7,10 +7,11 @@
 
 ## Medium Priority — Phase 3
 
-- [ ] `supervisor/immediate.py` — LangGraph graph: classify reply → apply/queue changes
-- [ ] Reply polling: query recent digest thread IDs, call `get_thread_replies`
-- [ ] Wire Phase 3 into `main.py` `_run_poll_replies`
-- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto
+- [x] `supervisor/immediate.py` — LangGraph graph: classify reply → apply/queue changes — 2026-03-26
+- [x] Reply polling: query recent digest thread IDs, call `get_thread_replies` — 2026-03-26
+- [x] Wire Phase 3 into `main.py` `_run_poll_replies` — 2026-03-26
+- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto (out of scope for Agent 1 — requires tools/ ownership)
+- [ ] `digests` table: add `thread_id` and `sent_message_id` columns (needed by `_run_poll_replies` to poll threads) — currently skipped if null
 
 ## Low Priority — Phase 4
 

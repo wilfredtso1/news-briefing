@@ -152,9 +152,90 @@ def _run_daily_brief(run_id: str) -> None:
 
 
 def _run_poll_replies(run_id: str) -> None:
-    """Phase 1 stub. Reply detection and supervisor wired in Phase 3."""
+    """
+    Poll Gmail for replies to recent digest threads and run the immediate supervisor.
+
+    Fetches all sent, unacknowledged digests from the last 7 days.
+    For each digest with a known Gmail thread ID, checks for new replies.
+    Each reply is processed by the immediate supervisor graph, which classifies
+    the reply, applies low-risk config changes, and queues high-risk ones.
+    Marks digests as acknowledged when the reply type is 'acknowledge' or 'both'
+    (the supervisor graph handles the DB write via mark_digest_acknowledged).
+
+    Non-fatal errors (single reply processing failure) are logged and skipped.
+    If the Gmail service fails to initialise, the entire job fails loudly.
+    """
+    from gmail_service import GmailService
+    from supervisor.immediate import run_immediate_supervisor
+    from tools.db import get_unacknowledged_digests
+
     log.info("poll_replies_start", run_id=run_id)
-    # TODO(phase3): query recent digests, check threads for replies, invoke supervisor
+    gmail = GmailService()
+
+    # Fetch recent unacknowledged digests — they are the only ones that can receive replies
+    digests = get_unacknowledged_digests(digest_type="daily_brief", days_back=7)
+    log.info("poll_replies_digests_fetched", run_id=run_id, digest_count=len(digests))
+
+    processed_replies = 0
+    for digest in digests:
+        digest_id = str(digest["id"])
+        # thread_id is stored on the digest row (populated by the daily brief pipeline at send time)
+        # If the thread_id column is absent or null, skip — we cannot poll without it
+        thread_id = digest.get("thread_id")
+        sent_message_id = digest.get("sent_message_id")
+
+        if not thread_id or not sent_message_id:
+            log.debug(
+                "poll_replies_digest_skipped_no_thread",
+                run_id=run_id,
+                digest_id=digest_id,
+            )
+            continue
+
+        try:
+            replies = gmail.get_thread_replies(
+                thread_id=thread_id,
+                after_message_id=sent_message_id,
+            )
+        except Exception as e:
+            log.warning(
+                "poll_replies_thread_fetch_failed",
+                run_id=run_id,
+                digest_id=digest_id,
+                thread_id=thread_id,
+                error=str(e),
+            )
+            continue
+
+        for reply in replies:
+            try:
+                result = run_immediate_supervisor(
+                    digest_id=digest_id,
+                    raw_reply=reply.body_text,
+                    thread_id=thread_id,
+                )
+                log.info(
+                    "poll_replies_supervisor_complete",
+                    run_id=run_id,
+                    digest_id=digest_id,
+                    reply_type=result.reply_type,
+                    action_taken=result.action_taken,
+                )
+                processed_replies += 1
+            except Exception as e:
+                log.warning(
+                    "poll_replies_supervisor_failed",
+                    run_id=run_id,
+                    digest_id=digest_id,
+                    error=str(e),
+                )
+
+    log.info(
+        "poll_replies_complete",
+        run_id=run_id,
+        digests_checked=len(digests),
+        replies_processed=processed_replies,
+    )
 
 
 def _run_deep_read(run_id: str) -> None:

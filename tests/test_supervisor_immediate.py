@@ -1,0 +1,786 @@
+"""
+Tests for supervisor/immediate.py — immediate supervisor mode.
+
+Testing strategy:
+- All LLM calls mocked via patching _classify_chain and _extract_chain
+- All DB helpers mocked via unittest.mock.patch
+- Tests cover both the full graph (via run_immediate_supervisor) and individual nodes
+- Coverage target: >90% of supervisor logic
+
+Key scenarios covered:
+  - acknowledge → mark digest acknowledged, no config change
+  - feedback (low-risk) → extract + validate + apply immediately
+  - feedback (high-risk) → extract + validate + queue, never apply
+  - both → acknowledge AND process the feedback
+  - irrelevant → no action, no DB writes
+  - LLM classify failure → defaults to irrelevant (safe)
+  - LLM extraction failure → defaults to unknown key, no action
+  - Unknown config key → risk_level=none, no action (not queued either)
+  - DB apply failure → raises (not silently swallowed)
+  - DB acknowledge failure → non-fatal warning, graph continues
+  - DB log failure → non-fatal warning, config change already applied
+"""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Shared state builder — avoids repeating all TypedDict fields in every test
+# ---------------------------------------------------------------------------
+
+def _make_state(**overrides) -> dict:
+    defaults = {
+        "digest_id": "digest-uuid-1234",
+        "raw_reply": "some reply",
+        "thread_id": "thread-5678",
+        "reply_type": "",
+        "proposed_key": "",
+        "proposed_value": None,
+        "risk_level": "none",
+        "extraction_reasoning": "",
+        "config_delta": {},
+        "queued_items": [],
+        "action_taken": "",
+        "event_id": "",
+    }
+    return {**defaults, **overrides}
+
+
+# ---------------------------------------------------------------------------
+# End-to-end tests: run_immediate_supervisor
+# ---------------------------------------------------------------------------
+
+
+class TestRunImmediateSupervisor:
+    """Full graph tests via run_immediate_supervisor with mocked LLM + DB."""
+
+    def test_acknowledge_marks_digest_and_returns_no_config_change(self):
+        """Pure acknowledgment: mark digest acknowledged, no config change, no feedback log."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "acknowledge"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "thanks!", "thread-1")
+
+        mock_ack.assert_called_once_with("digest-1")
+        mock_set.assert_not_called()
+        mock_insert.assert_not_called()
+        assert result.reply_type == "acknowledge"
+        assert result.config_delta == {}
+        assert result.queued_items == []
+        assert "acknowledged" in result.action_taken
+
+    def test_low_risk_feedback_applies_config_and_logs_event(self):
+        """Low-risk feedback: apply config change immediately, log feedback event as applied."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied") as mock_mark,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "topic_weights",
+                "value": {"crypto": 0.1},
+                "reasoning": "user wants less crypto",
+            }
+            mock_insert.return_value = "event-001"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "less crypto please", "thread-1")
+
+        mock_ack.assert_not_called()
+        mock_set.assert_called_once_with("topic_weights", {"crypto": 0.1}, updated_by="supervisor")
+        mock_insert.assert_called_once()
+        mock_mark.assert_called_once_with("event-001")
+        assert result.config_delta == {"topic_weights": {"crypto": 0.1}}
+        assert result.queued_items == []
+        assert result.reply_type == "feedback"
+
+    def test_high_risk_feedback_queues_not_applies(self):
+        """High-risk feedback: queue in feedback_events, never call set_config."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied") as mock_mark,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "prompt_edit",
+                "value": "make it more casual",
+                "reasoning": "style change",
+            }
+            mock_insert.return_value = "event-002"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "more casual tone", "thread-1")
+
+        mock_set.assert_not_called()
+        mock_mark.assert_not_called()
+        mock_insert.assert_called_once()
+        assert result.config_delta == {}
+        assert result.queued_items == ["event-002"]
+        assert "queued" in result.action_taken
+
+    def test_both_acknowledges_and_applies_feedback(self):
+        """'both' reply: acknowledge digest AND apply the feedback config change."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied") as mock_mark,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "both"}
+            mock_extract.invoke.return_value = {
+                "key": "topic_weights",
+                "value": {"ai": 2.0},
+                "reasoning": "more AI coverage",
+            }
+            mock_insert.return_value = "event-003"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "got it, more AI please", "thread-1")
+
+        mock_ack.assert_called_once_with("digest-1")
+        mock_set.assert_called_once_with("topic_weights", {"ai": 2.0}, updated_by="supervisor")
+        assert result.reply_type == "both"
+        assert result.config_delta == {"topic_weights": {"ai": 2.0}}
+        assert "acknowledged" in result.action_taken
+
+    def test_irrelevant_reply_takes_no_action(self):
+        """Irrelevant reply: no DB writes, no config changes."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "irrelevant"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "OOO auto-reply", "thread-1")
+
+        mock_ack.assert_not_called()
+        mock_set.assert_not_called()
+        mock_insert.assert_not_called()
+        assert result.reply_type == "irrelevant"
+        assert result.config_delta == {}
+        assert result.queued_items == []
+
+    def test_unknown_config_key_takes_no_action(self):
+        """Unknown key from extractor: risk=none → no apply, no queue."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "unknown",
+                "value": None,
+                "reasoning": "could not parse intent",
+            }
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "some vague message", "thread-1")
+
+        mock_set.assert_not_called()
+        mock_insert.assert_not_called()
+        assert result.config_delta == {}
+        assert result.queued_items == []
+
+    def test_classify_llm_failure_defaults_to_irrelevant(self):
+        """LLM classification failure should safely default to irrelevant — no crash."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("supervisor.immediate.set_config") as mock_set,
+        ):
+            mock_classify.invoke.side_effect = RuntimeError("API timeout")
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "some reply", "thread-1")
+
+        assert result.reply_type == "irrelevant"
+        mock_ack.assert_not_called()
+        mock_set.assert_not_called()
+
+    def test_acknowledge_db_failure_is_non_fatal(self):
+        """mark_digest_acknowledged failure should be logged as warning, not crash the graph."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "acknowledge"}
+            mock_ack.side_effect = Exception("DB connection error")
+
+            from supervisor.immediate import run_immediate_supervisor
+            # Should not raise
+            result = run_immediate_supervisor("digest-1", "thanks!", "thread-1")
+
+        assert result.reply_type == "acknowledge"
+
+    def test_apply_change_db_failure_raises(self):
+        """set_config failure should propagate — silent config failure is worse than a crash."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "topic_weights",
+                "value": {"ai": 1.8},
+                "reasoning": "more AI",
+            }
+            mock_set.side_effect = Exception("DB write failed")
+
+            from supervisor.immediate import run_immediate_supervisor
+            with pytest.raises(Exception, match="DB write failed"):
+                run_immediate_supervisor("digest-1", "more AI please", "thread-1")
+
+    def test_extraction_failure_treats_as_unknown_key(self):
+        """Extract chain failure defaults to unknown key → risk=none → no action."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.side_effect = RuntimeError("JSON parse error")
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "change stuff", "thread-1")
+
+        mock_set.assert_not_called()
+        mock_insert.assert_not_called()
+        assert result.config_delta == {}
+
+    def test_classify_unexpected_type_normalised_to_irrelevant(self):
+        """LLM returning an unrecognised reply_type is normalised to irrelevant."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "HACK_THE_PLANET"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "some reply", "thread-1")
+
+        assert result.reply_type == "irrelevant"
+        mock_ack.assert_not_called()
+
+    def test_result_is_supervisor_result_dataclass(self):
+        """run_immediate_supervisor always returns a SupervisorResult with all fields."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate.mark_digest_acknowledged"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "acknowledge"}
+
+            from supervisor.immediate import run_immediate_supervisor, SupervisorResult
+            result = run_immediate_supervisor("digest-1", "thanks!", "thread-1")
+
+        assert isinstance(result, SupervisorResult)
+        assert isinstance(result.action_taken, str) and result.action_taken
+        assert isinstance(result.config_delta, dict)
+        assert isinstance(result.queued_items, list)
+        assert isinstance(result.reply_type, str)
+
+    def test_word_budget_change_is_low_risk(self):
+        """word_budget is a low-risk key and should be applied immediately."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "word_budget",
+                "value": {"daily_brief_total": 2000},
+                "reasoning": "shorter digest",
+            }
+            mock_insert.return_value = "event-004"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "shorter please", "thread-1")
+
+        mock_set.assert_called_once_with(
+            "word_budget", {"daily_brief_total": 2000}, updated_by="supervisor"
+        )
+        assert "word_budget" in result.config_delta
+
+    def test_cosine_similarity_threshold_change_is_low_risk(self):
+        """cosine_similarity_threshold is a low-risk key and should be applied immediately."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "cosine_similarity_threshold",
+                "value": 0.85,
+                "reasoning": "stricter dedup",
+            }
+            mock_insert.return_value = "event-005"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "too many duplicates", "thread-1")
+
+        mock_set.assert_called_once_with(
+            "cosine_similarity_threshold", 0.85, updated_by="supervisor"
+        )
+        assert result.config_delta.get("cosine_similarity_threshold") == 0.85
+
+    def test_unsubscribe_is_high_risk(self):
+        """unsubscribe key is high-risk: must be queued, never auto-applied."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied") as mock_mark,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "unsubscribe",
+                "value": "spam@newsletter.com",
+                "reasoning": "user wants to unsubscribe",
+            }
+            mock_insert.return_value = "event-006"
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "unsubscribe from spam newsletter", "thread-1")
+
+        mock_set.assert_not_called()
+        mock_mark.assert_not_called()
+        assert result.queued_items == ["event-006"]
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: individual node functions
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyReplyNode:
+    """classify_reply_node in isolation."""
+
+    def test_returns_correct_reply_type(self):
+        with patch("supervisor.immediate._classify_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"reply_type": "feedback"}
+            from supervisor.immediate import classify_reply_node
+            result = classify_reply_node(_make_state())
+        assert result["reply_type"] == "feedback"
+
+    def test_llm_failure_defaults_to_irrelevant(self):
+        with patch("supervisor.immediate._classify_chain") as mock_chain:
+            mock_chain.invoke.side_effect = RuntimeError("network error")
+            from supervisor.immediate import classify_reply_node
+            result = classify_reply_node(_make_state())
+        assert result["reply_type"] == "irrelevant"
+
+    def test_unexpected_reply_type_normalised_to_irrelevant(self):
+        with patch("supervisor.immediate._classify_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"reply_type": "INVALID_TYPE"}
+            from supervisor.immediate import classify_reply_node
+            result = classify_reply_node(_make_state())
+        assert result["reply_type"] == "irrelevant"
+
+    @pytest.mark.parametrize("reply_type", ["acknowledge", "feedback", "both", "irrelevant"])
+    def test_all_valid_types_pass_through(self, reply_type):
+        with patch("supervisor.immediate._classify_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"reply_type": reply_type}
+            from supervisor.immediate import classify_reply_node
+            result = classify_reply_node(_make_state())
+        assert result["reply_type"] == reply_type
+
+
+class TestMaybeAcknowledgeNode:
+    """maybe_acknowledge_node in isolation."""
+
+    def test_acknowledges_for_acknowledge_type(self):
+        with patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack:
+            from supervisor.immediate import maybe_acknowledge_node
+            result = maybe_acknowledge_node(_make_state(digest_id="d1", reply_type="acknowledge"))
+        mock_ack.assert_called_once_with("d1")
+        assert "acknowledged" in result["action_taken"]
+
+    def test_acknowledges_for_both_type(self):
+        with patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack:
+            from supervisor.immediate import maybe_acknowledge_node
+            result = maybe_acknowledge_node(_make_state(digest_id="d1", reply_type="both"))
+        mock_ack.assert_called_once_with("d1")
+
+    def test_no_op_for_feedback_type(self):
+        with patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack:
+            from supervisor.immediate import maybe_acknowledge_node
+            result = maybe_acknowledge_node(_make_state(reply_type="feedback"))
+        mock_ack.assert_not_called()
+        assert result["action_taken"] == ""
+
+    def test_no_op_for_irrelevant_type(self):
+        with patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack:
+            from supervisor.immediate import maybe_acknowledge_node
+            result = maybe_acknowledge_node(_make_state(reply_type="irrelevant"))
+        mock_ack.assert_not_called()
+
+    def test_db_failure_is_non_fatal(self):
+        with patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack:
+            mock_ack.side_effect = Exception("DB error")
+            from supervisor.immediate import maybe_acknowledge_node
+            # Should not raise
+            result = maybe_acknowledge_node(_make_state(digest_id="d1", reply_type="acknowledge"))
+        assert isinstance(result, dict)
+
+
+class TestValidateChangeNode:
+    """validate_change_node — pure logic, no mocks needed."""
+
+    @pytest.mark.parametrize("key,expected_risk", [
+        ("topic_weights", "low"),
+        ("word_budget", "low"),
+        ("cosine_similarity_threshold", "low"),
+        ("prompt_edit", "high"),
+        ("unsubscribe", "high"),
+        ("source_change", "high"),
+        ("unknown", "none"),
+        ("some_new_key", "high"),  # Any unknown key not in LOW_RISK_CONFIG_KEYS is high
+    ])
+    def test_risk_classification(self, key, expected_risk):
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(proposed_key=key))
+        assert result["risk_level"] == expected_risk, (
+            f"key={key!r} should be {expected_risk!r} risk, got {result['risk_level']!r}"
+        )
+
+
+class TestRouteAfterAcknowledge:
+    """route_after_acknowledge routing function."""
+
+    def test_feedback_routes_to_extract_change(self):
+        from supervisor.immediate import route_after_acknowledge
+        result = route_after_acknowledge(_make_state(reply_type="feedback"))
+        assert result == "extract_change"
+
+    def test_both_routes_to_extract_change(self):
+        from supervisor.immediate import route_after_acknowledge
+        result = route_after_acknowledge(_make_state(reply_type="both"))
+        assert result == "extract_change"
+
+    def test_acknowledge_routes_to_end(self):
+        from langgraph.graph import END
+        from supervisor.immediate import route_after_acknowledge
+        result = route_after_acknowledge(_make_state(reply_type="acknowledge"))
+        assert result == END
+
+    def test_irrelevant_routes_to_no_op(self):
+        from supervisor.immediate import route_after_acknowledge
+        result = route_after_acknowledge(_make_state(reply_type="irrelevant"))
+        assert result == "no_op"
+
+
+class TestRouteAfterValidate:
+    """route_after_validate routing function."""
+
+    def test_low_risk_routes_to_apply(self):
+        from supervisor.immediate import route_after_validate
+        assert route_after_validate(_make_state(risk_level="low")) == "apply_change"
+
+    def test_high_risk_routes_to_queue(self):
+        from supervisor.immediate import route_after_validate
+        assert route_after_validate(_make_state(risk_level="high")) == "queue_change"
+
+    def test_none_routes_to_no_op(self):
+        from supervisor.immediate import route_after_validate
+        assert route_after_validate(_make_state(risk_level="none")) == "no_op"
+
+
+class TestApplyChangeNode:
+    """apply_change_node in isolation."""
+
+    def test_calls_set_config_and_updates_config_delta(self):
+        with patch("supervisor.immediate.set_config") as mock_set:
+            from supervisor.immediate import apply_change_node
+            state = _make_state(
+                proposed_key="topic_weights",
+                proposed_value={"crypto": 0.2},
+                extraction_reasoning="less crypto",
+            )
+            result = apply_change_node(state)
+
+        mock_set.assert_called_once_with("topic_weights", {"crypto": 0.2}, updated_by="supervisor")
+        assert result["config_delta"] == {"topic_weights": {"crypto": 0.2}}
+        assert "applied" in result["action_taken"]
+        assert "topic_weights" in result["action_taken"]
+
+    def test_accumulates_into_existing_config_delta(self):
+        """If config_delta already has entries, new key is added, not replaced."""
+        with patch("supervisor.immediate.set_config"):
+            from supervisor.immediate import apply_change_node
+            state = _make_state(
+                proposed_key="word_budget",
+                proposed_value={"daily_brief_total": 2000},
+                config_delta={"topic_weights": {"ai": 1.5}},
+            )
+            result = apply_change_node(state)
+
+        assert "topic_weights" in result["config_delta"]
+        assert "word_budget" in result["config_delta"]
+
+    def test_db_failure_raises(self):
+        with patch("supervisor.immediate.set_config") as mock_set:
+            mock_set.side_effect = Exception("write failed")
+            from supervisor.immediate import apply_change_node
+            with pytest.raises(Exception, match="write failed"):
+                apply_change_node(_make_state(proposed_key="topic_weights", proposed_value={}))
+
+
+class TestQueueChangeNode:
+    """queue_change_node in isolation."""
+
+    def test_inserts_feedback_event_and_updates_queued_items(self):
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            mock_insert.return_value = "event-abc"
+            from supervisor.immediate import queue_change_node
+            state = _make_state(
+                digest_id="d1",
+                raw_reply="change tone",
+                proposed_key="prompt_edit",
+                proposed_value="casual",
+                extraction_reasoning="style change",
+            )
+            result = queue_change_node(state)
+
+        mock_insert.assert_called_once()
+        assert result["queued_items"] == ["event-abc"]
+        assert "queued" in result["action_taken"]
+        assert result["event_id"] == "event-abc"
+
+    def test_accumulates_into_existing_queued_items(self):
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            mock_insert.return_value = "event-new"
+            from supervisor.immediate import queue_change_node
+            state = _make_state(
+                proposed_key="prompt_edit",
+                proposed_value="formal",
+                queued_items=["event-old"],
+            )
+            result = queue_change_node(state)
+
+        assert "event-old" in result["queued_items"]
+        assert "event-new" in result["queued_items"]
+
+    def test_db_failure_raises(self):
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            mock_insert.side_effect = Exception("DB gone")
+            from supervisor.immediate import queue_change_node
+            with pytest.raises(Exception, match="DB gone"):
+                queue_change_node(_make_state(proposed_key="prompt_edit"))
+
+    def test_proposed_change_serialised_as_json(self):
+        """The proposed_change field stored in DB should be valid JSON."""
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            mock_insert.return_value = "event-xyz"
+            from supervisor.immediate import queue_change_node
+            queue_change_node(_make_state(
+                proposed_key="unsubscribe",
+                proposed_value="spam@foo.com",
+            ))
+
+        call_kwargs = mock_insert.call_args.kwargs
+        proposed_change_str = call_kwargs.get("proposed_change", "")
+        parsed = json.loads(proposed_change_str)
+        assert parsed["key"] == "unsubscribe"
+        assert parsed["value"] == "spam@foo.com"
+
+
+class TestLogFeedbackEventNode:
+    """log_feedback_event_node in isolation."""
+
+    def test_logs_and_marks_applied_for_low_risk_with_delta(self):
+        with (
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+            patch("supervisor.immediate.mark_feedback_applied") as mock_mark,
+        ):
+            mock_insert.return_value = "event-log"
+            from supervisor.immediate import log_feedback_event_node
+            state = _make_state(
+                risk_level="low",
+                config_delta={"topic_weights": {"ai": 1.5}},
+                proposed_key="topic_weights",
+                proposed_value={"ai": 1.5},
+            )
+            result = log_feedback_event_node(state)
+
+        mock_insert.assert_called_once()
+        mock_mark.assert_called_once_with("event-log")
+        assert result["event_id"] == "event-log"
+
+    def test_skips_for_high_risk(self):
+        """High-risk events are already logged in queue_change_node."""
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            from supervisor.immediate import log_feedback_event_node
+            log_feedback_event_node(_make_state(
+                risk_level="high",
+                config_delta={},
+                queued_items=["event-queued"],
+            ))
+        mock_insert.assert_not_called()
+
+    def test_skips_for_empty_config_delta(self):
+        """If no config was actually changed (e.g. risk=low but apply failed), skip logging."""
+        with patch("supervisor.immediate.insert_feedback_event") as mock_insert:
+            from supervisor.immediate import log_feedback_event_node
+            log_feedback_event_node(_make_state(risk_level="low", config_delta={}))
+        mock_insert.assert_not_called()
+
+    def test_db_failure_is_non_fatal(self):
+        """Failure to log should not crash — config change already happened."""
+        with (
+            patch("supervisor.immediate.insert_feedback_event") as mock_insert,
+        ):
+            mock_insert.side_effect = Exception("DB gone")
+            from supervisor.immediate import log_feedback_event_node
+            # Should not raise
+            result = log_feedback_event_node(_make_state(
+                risk_level="low",
+                config_delta={"topic_weights": {"ai": 1.5}},
+            ))
+        assert isinstance(result, dict)
+
+
+class TestNoOpNode:
+    """no_op_node in isolation."""
+
+    def test_sets_action_taken_if_empty(self):
+        from supervisor.immediate import no_op_node
+        result = no_op_node(_make_state(reply_type="irrelevant", action_taken=""))
+        assert "no action" in result["action_taken"]
+
+    def test_preserves_existing_action_taken(self):
+        from supervisor.immediate import no_op_node
+        result = no_op_node(_make_state(action_taken="acknowledged digest"))
+        assert result["action_taken"] == "acknowledged digest"
+
+
+class TestExtractChangeNode:
+    """extract_change_node in isolation."""
+
+    def test_extracts_key_value_reasoning(self):
+        with patch("supervisor.immediate._extract_chain") as mock_chain:
+            mock_chain.invoke.return_value = {
+                "key": "topic_weights",
+                "value": {"sports": 0.1},
+                "reasoning": "less sports",
+            }
+            from supervisor.immediate import extract_change_node
+            result = extract_change_node(_make_state(raw_reply="less sports please"))
+
+        assert result["proposed_key"] == "topic_weights"
+        assert result["proposed_value"] == {"sports": 0.1}
+        assert result["extraction_reasoning"] == "less sports"
+
+    def test_failure_defaults_to_unknown_key(self):
+        with patch("supervisor.immediate._extract_chain") as mock_chain:
+            mock_chain.invoke.side_effect = RuntimeError("parse error")
+            from supervisor.immediate import extract_change_node
+            result = extract_change_node(_make_state())
+
+        assert result["proposed_key"] == "unknown"
+        assert result["proposed_value"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: SupervisorResult dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestSupervisorResult:
+    """SupervisorResult dataclass contract."""
+
+    def test_default_fields_are_empty(self):
+        from supervisor.immediate import SupervisorResult
+        result = SupervisorResult(action_taken="test")
+        assert result.config_delta == {}
+        assert result.queued_items == []
+        assert result.reply_type == "irrelevant"
+
+    def test_all_fields_settable(self):
+        from supervisor.immediate import SupervisorResult
+        result = SupervisorResult(
+            action_taken="applied topic_weights",
+            config_delta={"topic_weights": {"ai": 1.5}},
+            queued_items=["event-001"],
+            reply_type="feedback",
+        )
+        assert result.action_taken == "applied topic_weights"
+        assert result.config_delta == {"topic_weights": {"ai": 1.5}}
+        assert result.queued_items == ["event-001"]
+        assert result.reply_type == "feedback"
+
+
+# ---------------------------------------------------------------------------
+# Tests: LOW_RISK_CONFIG_KEYS constant
+# ---------------------------------------------------------------------------
+
+
+class TestLowRiskConfigKeys:
+    """Guard the risk boundary — any accidental change should break a test."""
+
+    def test_expected_low_risk_keys_present(self):
+        from supervisor.immediate import LOW_RISK_CONFIG_KEYS
+        assert "topic_weights" in LOW_RISK_CONFIG_KEYS
+        assert "word_budget" in LOW_RISK_CONFIG_KEYS
+        assert "cosine_similarity_threshold" in LOW_RISK_CONFIG_KEYS
+
+    def test_high_risk_keys_absent(self):
+        from supervisor.immediate import LOW_RISK_CONFIG_KEYS
+        assert "prompt_edit" not in LOW_RISK_CONFIG_KEYS
+        assert "unsubscribe" not in LOW_RISK_CONFIG_KEYS
+        assert "source_change" not in LOW_RISK_CONFIG_KEYS
+
+    def test_unknown_absent(self):
+        from supervisor.immediate import LOW_RISK_CONFIG_KEYS
+        assert "unknown" not in LOW_RISK_CONFIG_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Tests: package exports
+# ---------------------------------------------------------------------------
+
+
+class TestPackageExports:
+    """supervisor/__init__.py exports the correct symbols."""
+
+    def test_imports_from_package(self):
+        from supervisor import SupervisorResult, run_immediate_supervisor
+        assert callable(run_immediate_supervisor)
+        assert SupervisorResult is not None
+
+    def test_supervisor_result_importable_directly(self):
+        from supervisor.immediate import SupervisorResult
+        r = SupervisorResult(action_taken="test")
+        assert r.action_taken == "test"
