@@ -99,6 +99,13 @@ def run(run_id: str, dry_run: bool = False) -> dict:
 
     if not brief_messages:
         log.info("daily_brief_no_brief_newsletters", run_id=run_id)
+        if not dry_run:
+            from config import settings
+            gmail.send_message(
+                to=settings.gmail_send_as,
+                subject=f"You're up to date — {date_str}",
+                body="No new newsletters in your inbox yet. Check back later or wait for your morning brief.",
+            )
         return {"run_id": run_id, "status": "no_newsletters", "story_count": 0}
 
     # --- Step 3: Extract stories ---

@@ -104,7 +104,14 @@ class GmailService:
 
     def list_inbox_messages(self, max_results: int = 100) -> list[str]:
         """
-        Return message IDs for unread messages currently in the inbox.
+        Return message IDs for newsletters not yet processed.
+
+        Uses has:list-unsubscribe to find newsletters regardless of which label or
+        sub-inbox they live in (e.g. a "news" label with skip-inbox). The Briefed
+        label — applied by archive_message after processing — is the source of truth
+        for "already handled". This avoids depending on INBOX or UNREAD status, which
+        are unreliable when users organise mail into sub-labels.
+
         Paginated — fetches up to max_results (hard cap to prevent unbounded reads).
         """
         message_ids: list[str] = []
@@ -113,7 +120,7 @@ class GmailService:
         while len(message_ids) < max_results:
             result = self._service.users().messages().list(
                 userId="me",
-                labelIds=["INBOX", "UNREAD"],
+                q="has:list-unsubscribe -label:Briefed",
                 maxResults=min(100, max_results - len(message_ids)),
                 pageToken=page_token,
             ).execute()
