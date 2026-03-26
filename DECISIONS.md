@@ -323,3 +323,20 @@ changing the architecture.
 **Decision**: Option 3 — `read_at` on `story_clusters`. `mark_digest_acknowledged` calls `mark_clusters_read(digest_id)` which stamps all clusters referenced by that digest. `get_unacknowledged_stories` LEFT JOINs `story_clusters` and filters `sc.read_at IS NULL OR cluster_id IS NULL`.
 
 **Consequences**: Stories with no `cluster_id` (NULL) are always included in catch-up — this is correct behaviour for older stories that predate the cluster assignment logic. The index `idx_story_clusters_unread` (partial, WHERE read_at IS NULL) keeps the weekend catch-up query fast even as the cluster table grows.
+
+---
+
+## 2026-03-26: Per-user onboarding_complete check for web sign-ups
+
+**Status**: Accepted
+
+**Context**: `run_onboarding()` guards against re-running with `get_config("onboarding_complete")` from `agent_config`. That flag was set to `true` during the original single-user CLI setup. When a new user signs in via the web app and hits `/api/setup`, `_run_onboard` calls `run_onboarding()` which immediately returns `already_complete` — the setup email is never sent.
+
+**Options considered**:
+1. **Reset the global flag on new web sign-up** — Clear `agent_config.onboarding_complete` when a new user authenticates. Pros: minimal code change. Cons: destructive if the original user's preferences are still in use; confusing semantics (the system IS onboarded, a specific user is not).
+2. **Add `user_id` to `onboarding_events` (migration)** — Store which user triggered the onboarding so `process_onboarding_reply` can mark the right user complete. Pros: fully relational, correct for multi-user. Cons: requires schema migration; over-engineered for a personal single-user tool.
+3. **Per-user flag with fallback to global** — `run_onboarding(run_id, user_id=None)`: if `user_id` provided, check `users.onboarding_complete`; if not provided (cron call), check the global `agent_config` flag. On reply, call `mark_users_onboarding_complete()` which updates all `onboarding_complete = false` users. Pros: no migration, correct semantics, clean fallback for cron path.
+
+**Decision**: Option 3 — per-user flag with fallback. Web-triggered onboarding checks the per-user flag; cron-triggered onboarding uses the global flag (unchanged). `mark_users_onboarding_complete()` updates all pending users on reply — safe for a single-user deployment.
+
+**Consequences**: Multiple concurrent users signing up before anyone replies to the setup email would all be marked complete when the first reply is processed. Acceptable for a personal tool. If this becomes multi-user, migrate `onboarding_events` to add `user_id` and scope the update to that user.

@@ -12,8 +12,14 @@
 - **Static file serving** — `app.mount("/", StaticFiles(...))` at end of `main.py` serves built React app from `static/`. Conditional on `static/` directory existing so the app starts cleanly before first build.
 - **DB helpers** — `upsert_user`, `get_user_by_id`, `update_user_setup`, `set_user_status` in `tools/db.py`.
 
+### Fixed
+- **Web setup didn't trigger onboarding** — `run_onboarding()` was checking `agent_config.onboarding_complete` (already `true` from initial CLI setup) and returning early before sending the setup email. Fixed by passing `user_id` from `/api/setup` through `_run_onboard` to `run_onboarding`; web-triggered calls now check `users.onboarding_complete` for the specific user instead of the global flag.
+- **SPA routes returned 404 on Railway** — `Path("static")` resolved relative to Railway's CWD (not the project root). Changed to `Path(__file__).parent / "static"` for absolute resolution.
+
 ### Changed
-- `_run_onboard()` gains optional `user_id` param — passed from `/api/setup` for future per-user onboarding; existing `/jobs/onboard` endpoint unchanged.
+- `run_onboarding()` gains optional `user_id` param — web-triggered onboarding checks per-user flag; cron-triggered path unchanged.
+- `_run_onboard()` passes `user_id` through to `run_onboarding`.
+- `process_onboarding_reply` calls `mark_users_onboarding_complete()` after setting global flag.
 - `requirements.txt` — added `itsdangerous==2.2.0` for session signing.
 
 ---

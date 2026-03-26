@@ -10,11 +10,12 @@
 - [x] `web/src/pages/SetupPage.tsx` — email pre-filled from `/api/me`; submit POSTs to `/api/setup`
 - [x] `web/src/pages/AccountPage.tsx` — loads real user from `/api/me`; real pause/delete handlers
 - [x] Railway: `SESSION_SECRET_KEY`, `UNSUBSCRIBE_SECRET_KEY`, `GOOGLE_OAUTH_REDIRECT_URI` set
-- [ ] **Remaining manual**: Run `migrations/005_users.sql` against Supabase
-- [ ] **Remaining manual**: Create Google Cloud "Web application" OAuth 2.0 client and set `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` on Railway (see DECISIONS.md 2026-03-26)
-- [ ] **Remaining manual**: Build React app (`bun run build` in `web/`), copy `dist/` to `static/`, push to trigger Railway deploy
-- [ ] **Future**: Multi-tenancy — `user_id` column on all pipeline tables (see multi-user-spec.md)
-- [ ] **Future**: Encrypt `refresh_token` at rest (see web-integration-spec.md)
+- [x] `run_onboarding` per-user flag — web sign-ups check `users.onboarding_complete` instead of global flag; `mark_users_onboarding_complete()` added to `tools/db.py`
+- [x] SPA routing absolute path fix — `Path(__file__).parent / "static"` instead of relative `Path("static")`
+- [ ] **Remaining manual**: Run `migrations/005_users.sql` against Supabase (if not done)
+- [ ] **Future**: Add `user_id` to `onboarding_events` for proper per-user scoping (see DECISIONS.md 2026-03-26)
+- [ ] **Future**: Multi-tenancy — `user_id` column on all pipeline tables
+- [ ] **Future**: Encrypt `refresh_token` at rest
 
 ## Phase 7 — Self-Improving Agent ✓ Completed 2026-03-26
 

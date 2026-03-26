@@ -629,6 +629,19 @@ def set_user_status(user_id: str, status: str) -> None:
     log.info("user_status_updated", user_id=user_id, status=status)
 
 
+def mark_users_onboarding_complete() -> None:
+    """
+    Set onboarding_complete = true for all users that haven't been onboarded yet.
+    Called after process_onboarding_reply completes. Safe for single-user deployments;
+    for multi-user, migrate onboarding_events to store user_id instead.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET onboarding_complete = true WHERE onboarding_complete = false",
+        )
+    log.info("users_onboarding_complete_marked")
+
+
 def mark_onboarding_applied(event_id: str, raw_reply: str, parsed_preferences: dict) -> None:
     """Record the user's reply and parsed preferences, and mark the event applied."""
     with get_conn() as conn:

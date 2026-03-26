@@ -6,8 +6,8 @@ prioritization question, and uses the reply to set initial topic weights
 and source trust weights before the first daily brief runs.
 
 Entry points:
-  run_onboarding(run_id)                        — scan inbox and send setup email (idempotent)
-  process_onboarding_reply(event_id, raw_reply) — parse reply and apply preferences
+  run_onboarding(run_id, user_id=None)           — scan inbox and send setup email (idempotent)
+  process_onboarding_reply(event_id, raw_reply)  — parse reply and apply preferences
 
 Why this is separate from the supervisor:
   The supervisor processes replies to digest emails; feedback_events.digest_id
@@ -33,7 +33,9 @@ from tools.db import (
     get_active_sources,
     get_config,
     get_pending_onboarding_event,
+    get_user_by_id,
     mark_onboarding_applied,
+    mark_users_onboarding_complete,
     set_config,
     update_onboarding_thread,
     update_source_trust_weight,
@@ -115,12 +117,17 @@ _parse_reply_chain = _PARSE_REPLY_PROMPT | _haiku | JsonOutputParser()
 # ---------------------------------------------------------------------------
 
 
-def run_onboarding(run_id: str) -> dict:
+def run_onboarding(run_id: str, user_id: str | None = None) -> dict:
     """
     Scan the inbox for newsletters and send the user a setup email.
 
     Idempotent: no-ops if onboarding is already complete or if a setup email
     is pending a reply. Safe to call on every poll cycle.
+
+    user_id: when called from the web /api/setup endpoint, the per-user
+    onboarding_complete flag takes precedence over the global agent_config flag.
+    This allows new web sign-ups to be onboarded even if the system-level flag
+    was already set by a previous run.
 
     Returns a dict with a 'status' key:
       'already_complete'  — onboarding_complete is True; nothing to do
@@ -128,7 +135,12 @@ def run_onboarding(run_id: str) -> dict:
       'sent'              — setup email sent successfully this run
       'no_sources_found'  — inbox scan found no newsletters (logged as warning)
     """
-    if get_config("onboarding_complete") is True:
+    if user_id:
+        user = get_user_by_id(user_id)
+        if user and user.get("onboarding_complete"):
+            log.info("onboarding_already_complete", run_id=run_id, user_id=user_id)
+            return {"status": "already_complete"}
+    elif get_config("onboarding_complete") is True:
         log.info("onboarding_already_complete", run_id=run_id)
         return {"status": "already_complete"}
 
@@ -270,6 +282,7 @@ def process_onboarding_reply(event_id: str, raw_reply: str, run_id: str) -> dict
 
     mark_onboarding_applied(event_id, raw_reply, parsed)
     set_config("onboarding_complete", True, updated_by="onboarding")
+    mark_users_onboarding_complete()
 
     log.info(
         "onboarding_complete",

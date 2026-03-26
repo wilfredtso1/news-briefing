@@ -636,13 +636,15 @@ def _run_onboard(run_id: str, user_id: Optional[str] = None) -> None:
     """
     Run the onboarding flow. Idempotent — no-ops if already complete.
     Scans inbox for newsletters and sends a setup email to the user.
-    user_id is passed when triggered from the web /api/setup endpoint.
+    user_id is passed when triggered from the web /api/setup endpoint;
+    it causes run_onboarding to check the per-user flag rather than the
+    global agent_config flag, so new web sign-ups always get a setup email.
     """
     from pipeline.onboarding import run_onboarding
 
     log.info("onboard_start", run_id=run_id, user_id=user_id)
     try:
-        result = run_onboarding(run_id=run_id)
+        result = run_onboarding(run_id=run_id, user_id=user_id)
         log.info("onboard_finished", run_id=run_id, status=result.get("status"))
     except Exception as e:
         log.error("onboard_failed", run_id=run_id, error=str(e))
