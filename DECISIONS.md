@@ -340,3 +340,15 @@ changing the architecture.
 **Decision**: Option 3 — per-user flag with fallback. Web-triggered onboarding checks the per-user flag; cron-triggered onboarding uses the global flag (unchanged). `mark_users_onboarding_complete()` updates all pending users on reply — safe for a single-user deployment.
 
 **Consequences**: Multiple concurrent users signing up before anyone replies to the setup email would all be marked complete when the first reply is processed. Acceptable for a personal tool. If this becomes multi-user, migrate `onboarding_events` to add `user_id` and scope the update to that user.
+
+---
+
+## 2026-03-26: anchor_cutoff_hour was implemented in config but never enforced
+
+**Status**: Fixed
+
+**Context**: During end-to-end debugging, discovered that `settings.anchor_cutoff_hour` (default: 10) was defined in `config.py` with a docstring "Hard cutoff — run regardless of anchors after this hour" and documented in CLAUDE.md, but `_run_daily_brief()` in `main.py` only checked `anchors_ready` and returned early if False. There was no time check. If Axios AM or Morning Brew didn't arrive (newsletter paused, spam filter, delivery delay), the daily brief would skip every single 15-minute poll including the 10am cutoff — silently, forever.
+
+**Decision**: Added `current_hour = datetime.now().hour` check in `_run_daily_brief()`. If `anchors_ready` is False AND `current_hour >= settings.anchor_cutoff_hour`, run the pipeline anyway and log `daily_brief_anchor_cutoff_reached`. Added 5 regression tests to `tests/test_daily_brief.py` covering before/at/past cutoff and anchors-present cases.
+
+**Consequences**: The brief will now always run by 10am on weekdays regardless of anchor newsletter delivery. The cutoff hour is configurable via `ANCHOR_CUTOFF_HOUR` env var.

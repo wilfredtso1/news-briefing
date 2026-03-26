@@ -583,3 +583,122 @@ class TestProcessOnboardingReplySourceTypeCorrections:
 
         mock_update_type.assert_not_called()
         assert "applied_changes" in result
+
+
+# ---------------------------------------------------------------------------
+# run_onboarding — user_id parameter (per-user onboarding flag)
+# ---------------------------------------------------------------------------
+
+class TestRunOnboardingUserIdFlag:
+    """When user_id is provided, per-user flag takes precedence over global flag."""
+
+    def test_user_already_onboarded_returns_already_complete(self):
+        """If user.onboarding_complete is True, skip regardless of global flag."""
+        with (
+            patch("pipeline.onboarding.get_user_by_id", return_value={"onboarding_complete": True}),
+            patch("pipeline.onboarding.get_config", return_value=False),  # global flag is False
+            patch("pipeline.onboarding.GmailService") as mock_svc,
+        ):
+            result = run_onboarding(run_id="test-run", user_id="user-uuid-1")
+
+        assert result["status"] == "already_complete"
+        mock_svc.assert_not_called()
+
+    def test_user_not_yet_onboarded_proceeds_despite_global_flag_true(self):
+        """If user.onboarding_complete is False, proceed even when global flag is True."""
+        with (
+            patch("pipeline.onboarding.get_user_by_id", return_value={"onboarding_complete": False}),
+            patch("pipeline.onboarding.get_config", return_value=True),  # global flag says complete
+            patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None),
+            patch("pipeline.onboarding.GmailService") as mock_svc,
+            patch("pipeline.onboarding.source_classifier") as mock_classifier,
+            patch("pipeline.onboarding.get_active_sources", return_value=[]),
+            patch("pipeline.onboarding.create_onboarding_event", return_value="evt-001"),
+            patch("pipeline.onboarding.update_onboarding_thread"),
+        ):
+            classifier_result = MagicMock()
+            classifier_result.is_newsletter = True
+            classifier_result.source_type = "news_brief"
+            classifier_result.sender_email = "axiosam@axios.com"
+            classifier_result.sender_name = "Axios AM"
+            mock_classifier.classify.return_value = classifier_result
+
+            gmail = MagicMock()
+            gmail.list_inbox_messages.return_value = ["msg-001"]
+            gmail.get_messages.return_value = [MagicMock(sender_email="axiosam@axios.com")]
+            gmail.send_message.return_value = ("sent-id", "thread-id")
+            mock_svc.return_value = gmail
+
+            result = run_onboarding(run_id="test-run", user_id="user-uuid-1")
+
+        # GmailService was created — pipeline proceeded
+        mock_svc.assert_called_once()
+        assert result["status"] in ("sent", "no_sources_found")
+
+    def test_no_user_id_falls_back_to_global_flag(self):
+        """Without user_id, global agent_config.onboarding_complete is used as guard."""
+        with (
+            patch("pipeline.onboarding.get_config", return_value=True),
+            patch("pipeline.onboarding.get_user_by_id") as mock_get_user,
+            patch("pipeline.onboarding.GmailService") as mock_svc,
+        ):
+            result = run_onboarding(run_id="test-run")  # no user_id
+
+        mock_get_user.assert_not_called()
+        assert result["status"] == "already_complete"
+        mock_svc.assert_not_called()
+
+    def test_user_id_provided_but_user_not_found_proceeds(self):
+        """If get_user_by_id returns None (user deleted?), fall through to inbox scan."""
+        with (
+            patch("pipeline.onboarding.get_user_by_id", return_value=None),
+            patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None),
+            patch("pipeline.onboarding.GmailService") as mock_svc,
+            patch("pipeline.onboarding.source_classifier"),
+            patch("pipeline.onboarding.get_active_sources", return_value=[]),
+            patch("pipeline.onboarding.create_onboarding_event", return_value="evt-001"),
+            patch("pipeline.onboarding.update_onboarding_thread"),
+        ):
+            gmail = MagicMock()
+            gmail.list_inbox_messages.return_value = []
+            gmail.get_messages.return_value = []
+            gmail.send_message.return_value = ("sent-id", "thread-id")
+            mock_svc.return_value = gmail
+
+            result = run_onboarding(run_id="test-run", user_id="unknown-uuid")
+
+        # GmailService was created — pipeline proceeded
+        mock_svc.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# process_onboarding_reply — marks users onboarding complete
+# ---------------------------------------------------------------------------
+
+class TestProcessOnboardingReplyMarksUsersComplete:
+    """After a reply is processed, mark_users_onboarding_complete() is called."""
+
+    def test_mark_users_onboarding_complete_called_on_success(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "source_type_corrections": [],
+            "topic_adjustments": {},
+            "notes": "",
+        }
+        with (
+            patch("pipeline.onboarding.get_active_sources", return_value=active_sources),
+            patch("pipeline.onboarding._parse_reply_chain") as mock_chain,
+            patch("pipeline.onboarding.update_source_trust_weight"),
+            patch("pipeline.onboarding.deprioritize_source"),
+            patch("pipeline.onboarding.get_config", return_value={}),
+            patch("pipeline.onboarding.set_config"),
+            patch("pipeline.onboarding.mark_onboarding_applied"),
+            patch("pipeline.onboarding.update_source_type"),
+            patch("pipeline.onboarding.mark_users_onboarding_complete") as mock_mark,
+        ):
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "looks good", "run_001")
+
+        mock_mark.assert_called_once()

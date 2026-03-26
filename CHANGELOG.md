@@ -1,5 +1,21 @@
 # Changelog
 
+## [End-to-End Reliability + Testing Harness] — 2026-03-26
+
+### Fixed
+- **Daily brief never ran past anchor wait** — `anchor_cutoff_hour` was configured but never checked. If Axios AM or Morning Brew didn't arrive, the brief silently skipped every poll cycle including the 10am hard cutoff. `_run_daily_brief()` now compares `datetime.now().hour` against `settings.anchor_cutoff_hour` and runs the pipeline unconditionally once the cutoff is reached.
+
+### Added
+- **`tests/test_daily_brief.py`** — 24 new tests covering the full pipeline (previously had 0 tests):
+  - Happy path: email sent, newsletters archived, digest persisted to DB
+  - Early returns: no messages, no newsletters, no stories
+  - Resilience: single-newsletter extraction failure skips that newsletter, pipeline continues
+  - Failed newsletter not archived (prevents losing emails silently)
+  - dry_run mode: no send, no archive, no DB write
+  - Anchor cutoff: 5 tests covering before/at/after cutoff and anchors-present cases
+
+---
+
 ## [Web App — Multi-User Frontend] — 2026-03-26
 
 ### Added

@@ -401,9 +401,26 @@ def _run_daily_brief(run_id: str) -> None:
         gmail = GmailService()
         anchors_ready = gmail.check_anchor_sources_present(settings.anchor_sources)
         if not anchors_ready:
-            log.info("daily_brief_skipped_anchors_not_ready", run_id=run_id, anchors=settings.anchor_sources)
-            return
-        log.info("daily_brief_anchors_ready", run_id=run_id)
+            current_hour = datetime.now().hour
+            if current_hour < settings.anchor_cutoff_hour:
+                log.info(
+                    "daily_brief_skipped_anchors_not_ready",
+                    run_id=run_id,
+                    anchors=settings.anchor_sources,
+                    current_hour=current_hour,
+                    cutoff_hour=settings.anchor_cutoff_hour,
+                )
+                return
+            # Anchors haven't arrived but we've passed the cutoff — run anyway
+            log.info(
+                "daily_brief_anchor_cutoff_reached",
+                run_id=run_id,
+                anchors=settings.anchor_sources,
+                current_hour=current_hour,
+                cutoff_hour=settings.anchor_cutoff_hour,
+            )
+        else:
+            log.info("daily_brief_anchors_ready", run_id=run_id)
         daily_brief.run(run_id=run_id)
     except Exception as e:
         log.error("daily_brief_failed", run_id=run_id, error=str(e))

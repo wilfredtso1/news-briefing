@@ -12,6 +12,8 @@
 - [x] Railway: `SESSION_SECRET_KEY`, `UNSUBSCRIBE_SECRET_KEY`, `GOOGLE_OAUTH_REDIRECT_URI` set
 - [x] `run_onboarding` per-user flag — web sign-ups check `users.onboarding_complete` instead of global flag; `mark_users_onboarding_complete()` added to `tools/db.py`
 - [x] SPA routing absolute path fix — `Path(__file__).parent / "static"` instead of relative `Path("static")`
+- [x] Anchor cutoff hour — `_run_daily_brief` now implements the 10am hard cutoff; was configured but never checked
+- [x] `tests/test_daily_brief.py` — 24 tests for the full pipeline (was 0)
 - [ ] **Remaining manual**: Run `migrations/005_users.sql` against Supabase (if not done)
 - [ ] **Future**: Add `user_id` to `onboarding_events` for proper per-user scoping (see DECISIONS.md 2026-03-26)
 - [ ] **Future**: Multi-tenancy — `user_id` column on all pipeline tables
