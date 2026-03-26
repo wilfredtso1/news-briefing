@@ -1,5 +1,42 @@
 # TODO
 
+## Web App — Multi-User Frontend ✓ Backend Complete 2026-03-26
+
+- [x] `migrations/005_users.sql` — `users` table (google_sub, email, display_name, refresh_token, delivery_email, timezone, status, onboarding_complete, last_brief_at)
+- [x] `tools/db.py`: `upsert_user`, `get_user_by_id`, `update_user_setup`, `set_user_status` helpers
+- [x] `main.py`: 7 new endpoints (`GET /auth/google`, `GET /auth/google/callback`, `GET /api/me`, `POST /api/setup`, `POST /api/pause`, `DELETE /api/account`, `GET /api/unsubscribe`); session signing helpers; static file mount
+- [x] `config.py`: `google_oauth_client_id`, `google_oauth_client_secret`, `google_oauth_redirect_uri`, `session_secret_key`, `unsubscribe_secret_key` optional fields
+- [x] `web/src/pages/LandingPage.tsx` — `handleSignIn` redirects to `/auth/google`
+- [x] `web/src/pages/SetupPage.tsx` — email pre-filled from `/api/me`; submit POSTs to `/api/setup`
+- [x] `web/src/pages/AccountPage.tsx` — loads real user from `/api/me`; real pause/delete handlers
+- [x] Railway: `SESSION_SECRET_KEY`, `UNSUBSCRIBE_SECRET_KEY`, `GOOGLE_OAUTH_REDIRECT_URI` set
+- [ ] **Remaining manual**: Run `migrations/005_users.sql` against Supabase
+- [ ] **Remaining manual**: Create Google Cloud "Web application" OAuth 2.0 client and set `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` on Railway (see DECISIONS.md 2026-03-26)
+- [ ] **Remaining manual**: Build React app (`bun run build` in `web/`), copy `dist/` to `static/`, push to trigger Railway deploy
+- [ ] **Future**: Multi-tenancy — `user_id` column on all pipeline tables (see multi-user-spec.md)
+- [ ] **Future**: Encrypt `refresh_token` at rest (see web-integration-spec.md)
+
+## Phase 7 — Self-Improving Agent ✓ Completed 2026-03-26
+
+- [x] `supervisor/code_change_agent.py` — LangGraph agent with 4 scoped tools (`read_file`, `write_file`, `run_bash`, `send_diff_email`); invoked from `trigger_code_change_node` when `proposed_key == "unknown"` and `len(raw_reply) > 50`
+- [x] Agent drafts code changes, runs `pytest tests/` as gate, emails diff with subject "product input required for news briefing"
+- [x] Approval path: user replies "approve" → `code_change_approval` reply type → `git push` → Railway auto-deploys
+- [x] Scope constraints: `write_file` blocks `schema.sql`, `main.py`, `config.py`, `migrations/`; only `pipeline/`, `supervisor/`, `tools/` allowed
+- [x] `CODE_CHANGE_NOTIFY_EMAIL` env var (falls back to `ALERT_EMAIL`); added to `config.py` as optional field
+- [x] 20 tests — all passing
+
+## Immediate Fixes — Source Coverage & Supervisor Expansion ✓ Completed 2026-03-26
+
+- [x] Source classifier reads `newsletter_sources.type` from DB before running length heuristic — fixes Morning Brew/Axios permanently after onboarding
+- [x] `update_source_type(sender_email, type)` DB helper added to `tools/db.py`
+- [x] `crew@morningbrew.com` and `markets@axios.com` added to `KNOWN_NEWS_BRIEF_SENDERS`
+- [x] Onboarding setup email + reply parser accepts `source_type_corrections`
+- [x] Supervisor maps "include X in daily brief" → `source_reclassify` → `update_source_type`
+- [x] `web_search_topics` agent_config key + `gap_fill_topics()` step in daily_brief after enricher
+- [x] `synthesis_style_notes` agent_config key; synthesizer reads at call time
+- [x] Schema seed + `migrations/004_agent_config_style_topics.sql`; migration run 2026-03-26
+- [x] 83 total new tests across all 4 branches — 471 passing (up from 388)
+
 ## Phase 6 — Onboarding ✓ Completed 2026-03-26
 
 - [x] Schema migration: `onboarding_events` table + seed `onboarding_complete: false` — migrations/003_onboarding.sql
@@ -18,9 +55,12 @@
 
 ## Remaining Pre-Production Work
 
-- [ ] E2E smoke test: daily_brief against real Gmail inbox in dry-run mode (needs live credentials)
-- [ ] E2E test Phase 3 supervisor against real Gmail reply thread (needs live credentials)
-- [ ] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB — `@pytest.mark.e2e`
+- [x] E2E smoke test: daily_brief against real Gmail inbox in dry-run mode — Completed 2026-03-26
+- [x] E2E test Phase 3 supervisor against real Gmail reply thread — Completed 2026-03-26 (word_budget change applied from live reply)
+- [x] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB — Completed 2026-03-26
+- [x] Railway web service deployed and healthy — Completed 2026-03-26
+- [x] 5 Railway cron services configured (daily-brief, poll-replies, deep-read, weekend-catchup, supervisor-weekly) — Completed 2026-03-26
+- [x] Onboarding completed against live Gmail inbox — Completed 2026-03-26
 - [ ] Weekly supervisor approval flow: store weekly review as a digest, poll replies, route approvals to immediate supervisor — deferred per DECISIONS.md 2026-03-26
 
 ## Low Priority / Nice to Have

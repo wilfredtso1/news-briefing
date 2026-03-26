@@ -141,6 +141,162 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# Auth + API endpoints (web app)
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/google")
+async def auth_google():
+    """Redirect browser to Google OAuth consent screen requesting Gmail scopes."""
+    if not settings.google_oauth_client_id or not settings.google_oauth_redirect_uri:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+    params = {
+        "client_id": settings.google_oauth_client_id,
+        "redirect_uri": settings.google_oauth_redirect_uri,
+        "response_type": "code",
+        "scope": " ".join([
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ]),
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return RedirectResponse(url)
+
+
+@app.get("/auth/google/callback")
+async def auth_google_callback(code: str, response: Response):
+    """Exchange OAuth code for tokens, upsert user, set session cookie, redirect."""
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+    from tools.db import upsert_user
+
+    if not settings.google_oauth_client_id or not settings.google_oauth_client_secret:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured")
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": settings.google_oauth_client_id,
+            "client_secret": settings.google_oauth_client_secret,
+            "redirect_uri": settings.google_oauth_redirect_uri,
+            "grant_type": "authorization_code",
+        })
+    tokens = token_resp.json()
+    if "error" in tokens:
+        log.error("oauth_token_exchange_failed", error=tokens.get("error"))
+        raise HTTPException(status_code=400, detail="OAuth token exchange failed")
+
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            tokens["id_token"],
+            google_requests.Request(),
+            settings.google_oauth_client_id,
+        )
+    except Exception as e:
+        log.error("oauth_id_token_verification_failed", error=str(e))
+        raise HTTPException(status_code=400, detail="Failed to verify Google identity")
+
+    user = upsert_user(
+        google_sub=claims["sub"],
+        email=claims["email"],
+        display_name=claims.get("name"),
+        refresh_token=tokens.get("refresh_token", ""),
+    )
+
+    session_token = _sign_session(str(user["id"]))
+    redirect_url = "/account" if user.get("onboarding_complete") else "/setup"
+    redirect_response = RedirectResponse(redirect_url)
+    redirect_response.set_cookie(
+        "session", session_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+    )
+    log.info("user_authenticated", user_id=str(user["id"]), email=user["email"])
+    return redirect_response
+
+
+@app.get("/api/me")
+async def get_me(request: Request):
+    """Return current user data. 401 if no valid session cookie."""
+    user = _require_session(request)
+    display_name = user.get("display_name") or ""
+    first_name = display_name.split()[0] if display_name else user["email"]
+    last_brief_at = user.get("last_brief_at")
+    return {
+        "id": str(user["id"]),
+        "email": user["email"],
+        "delivery_email": user.get("delivery_email") or user["email"],
+        "display_name": display_name,
+        "first_name": first_name,
+        "timezone": user.get("timezone", "America/New_York"),
+        "status": user["status"],
+        "onboarding_complete": user.get("onboarding_complete", False),
+        "last_brief_at": last_brief_at.isoformat() if last_brief_at else None,
+    }
+
+
+@app.post("/api/setup")
+async def api_setup(request: Request, background_tasks: BackgroundTasks, body: SetupRequest):
+    """Save delivery email + timezone, then trigger onboarding in background."""
+    from tools.db import update_user_setup
+    user = _require_session(request)
+    update_user_setup(str(user["id"]), delivery_email=body.delivery_email, timezone=body.timezone)
+    run_id = str(uuid.uuid4())
+    background_tasks.add_task(_run_onboard, run_id, user_id=str(user["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/pause")
+async def api_pause(request: Request):
+    """Pause briefings for the current user."""
+    from tools.db import set_user_status
+    user = _require_session(request)
+    set_user_status(str(user["id"]), "paused")
+    return {"ok": True}
+
+
+@app.delete("/api/account")
+async def api_delete_account(request: Request):
+    """Revoke Gmail token, mark user deleted, clear session cookie."""
+    from tools.db import set_user_status
+    user = _require_session(request)
+    refresh_token = user.get("refresh_token", "")
+    if refresh_token:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://oauth2.googleapis.com/revoke",
+                    params={"token": refresh_token},
+                )
+        except Exception as e:
+            log.warning("oauth_revoke_failed", user_id=str(user["id"]), error=str(e))
+    set_user_status(str(user["id"]), "deleted")
+    json_response = JSONResponse({"ok": True})
+    json_response.delete_cookie("session")
+    return json_response
+
+
+@app.get("/api/unsubscribe")
+async def one_click_unsubscribe(token: str):
+    """
+    Validate signed unsubscribe token from brief footer link.
+    Marks user deleted, then redirects to the /unsubscribe SPA page.
+    Email footer links should point to /api/unsubscribe?token=...
+    """
+    from tools.db import set_user_status
+    user_id = _verify_unsubscribe_token(token)
+    set_user_status(user_id, "deleted")
+    return RedirectResponse("/unsubscribe")
+
+
+# ---------------------------------------------------------------------------
 # Job endpoints
 # All jobs run in the background so the HTTP response returns immediately.
 # Railway cron does not wait for job completion.
@@ -476,14 +632,15 @@ def _check_inbox_commands(run_id: str, gmail) -> None:
             gmail.archive_messages([msg.message_id])
 
 
-def _run_onboard(run_id: str) -> None:
+def _run_onboard(run_id: str, user_id: Optional[str] = None) -> None:
     """
     Run the onboarding flow. Idempotent — no-ops if already complete.
     Scans inbox for newsletters and sends a setup email to the user.
+    user_id is passed when triggered from the web /api/setup endpoint.
     """
     from pipeline.onboarding import run_onboarding
 
-    log.info("onboard_start", run_id=run_id)
+    log.info("onboard_start", run_id=run_id, user_id=user_id)
     try:
         result = run_onboarding(run_id=run_id)
         log.info("onboard_finished", run_id=run_id, status=result.get("status"))
@@ -538,3 +695,14 @@ def _run_supervisor_weekly(run_id: str) -> None:
         log.error("supervisor_weekly_failed", run_id=run_id, error=str(e))
         send_alert("supervisor_weekly", e, run_id)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Static file serving (SPA)
+# MUST be last — catch-all for all paths not matched above.
+# Build the React app, copy dist/ to static/, then serve from here.
+# ---------------------------------------------------------------------------
+
+import os as _os
+if _os.path.isdir("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")

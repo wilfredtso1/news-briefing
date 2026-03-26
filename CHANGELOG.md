@@ -1,6 +1,43 @@
 # Changelog
 
+## [Web App — Multi-User Frontend] — 2026-03-26
+
+### Added
+- **React SPA wired to real backend** — Alloy/Paper-designed React app (`web/`) connected to new FastAPI endpoints. Google OAuth flow replaces mock sign-in; setup form POSTs to real API; account page shows live user status and last brief time.
+- **Google OAuth sign-in** — `GET /auth/google` redirects to Google consent screen; `GET /auth/google/callback` exchanges code for tokens, upserts user record, sets a signed session cookie (30-day expiry), redirects to `/setup` (new user) or `/account` (returning user).
+- **Session management** — `itsdangerous.URLSafeSerializer` signs session cookies with `SESSION_SECRET_KEY`. `_require_session()` helper validates cookie on every protected endpoint, raises 401 if missing or stale.
+- **User management endpoints** — `GET /api/me` (profile + status), `POST /api/setup` (saves delivery email + timezone, triggers onboarding), `POST /api/pause` (pauses briefings), `DELETE /api/account` (revokes Gmail token, marks user deleted, clears cookie).
+- **Signed unsubscribe links** — `GET /api/unsubscribe?token=...` validates HMAC-SHA256 token, marks user deleted, redirects to `/unsubscribe` SPA page. `_make_unsubscribe_token()` helper for brief footers. `UNSUBSCRIBE_SECRET_KEY` in Railway.
+- **`users` table** — `migrations/005_users.sql`: id, google_sub (unique), email, display_name, refresh_token, delivery_email, timezone, status, onboarding_complete, created_at, last_brief_at.
+- **Static file serving** — `app.mount("/", StaticFiles(...))` at end of `main.py` serves built React app from `static/`. Conditional on `static/` directory existing so the app starts cleanly before first build.
+- **DB helpers** — `upsert_user`, `get_user_by_id`, `update_user_setup`, `set_user_status` in `tools/db.py`.
+
+### Changed
+- `_run_onboard()` gains optional `user_id` param — passed from `/api/setup` for future per-user onboarding; existing `/jobs/onboard` endpoint unchanged.
+- `requirements.txt` — added `itsdangerous==2.2.0` for session signing.
+
+---
+
+## [Production Deployment] — 2026-03-26
+
+### Added
+- **Railway web service deployed** — FastAPI app live at `https://news-briefings-agent-production.up.railway.app`; all env vars configured, health check passing.
+- **5 Railway cron services configured** — `daily-brief` (*/15 6-10 Mon–Fri), `poll-replies` (*/15 every day), `deep-read` (9am Mon–Fri), `weekend-catchup` (8am Sunday), `supervisor-weekly` (7am Sunday). All services have `WEB_SERVICE_URL` set.
+- **Onboarding completed** — first run of `/jobs/onboard` processed against live Gmail inbox; user preferences applied to `agent_config`; `onboarding_complete` set to `true`.
+
+### Fixed
+- Removed `SENDGRID_API_KEY`, `SENDGRID_FROM_EMAIL`, and `WEBHOOK_SECRET` from `.env.example` — leftover from an earlier architecture; this project uses Gmail API for all email sending.
+
+---
+
 ## [Unreleased] — 2026-03-26
+
+### Fixed
+- `tools/retry.py` — `fn.__name__` access on MagicMock raised `AttributeError` in unit tests; replaced manual name assignment with `functools.wraps` + `getattr(fn, '__name__', repr(fn))` in log call. No behavior change in production.
+- `tests/test_weekend_catchup.py`, `tests/test_deep_read.py` — `send_message` mocks returned bare strings; `pipeline/weekend_catchup.py` and `pipeline/deep_read.py` unpack the return as `(message_id, thread_id)`. Fixed mocks to return `("msg-id", "thread-id")` tuples. All 388 unit tests now pass (was 379).
+- `tests/test_weekend_catchup.py`, `tests/test_deep_read.py` — E2E skip guard checked `SUPABASE_URL` but `.env` sets `DATABASE_URL`. Fixed env var name. All 4 Phase 4 E2E tests now pass against real DB.
+- `tools/db.py` — `conn.description` used throughout; psycopg3 `Connection` has no `.description` attribute (only `Cursor` does). Fixed all 8 occurrences by capturing cursor: `cur = conn.execute(...); cols = [d.name for d in cur.description]`. Fixes `AttributeError` on real DB connections (was masked by mocks).
+- `tools/db.py` `get_unacknowledged_stories` — hook had added a `story_clusters` JOIN referencing `sc.read_at` (column doesn't exist in schema); reverted to original query with no clusters join.
 
 ### Added
 - **On-demand pipeline trigger via email** — User can reply to any digest (or send a self-addressed email) saying "send brief" or "deep read" to trigger a pipeline run within ~15 minutes, bypassing anchor checks and queue thresholds. Implemented as a new `"command"` reply type in the immediate supervisor graph with two new nodes (`extract_command`, `execute_command`); `_check_inbox_commands` helper in `main.py` handles the self-email failsafe path. `run_deep_read` gains a `force=True` parameter to bypass threshold and minimum article count.

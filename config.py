@@ -46,6 +46,16 @@ class Config:
     # Optional — code change agent notification email
     code_change_notify_email: Optional[str] = None
 
+    # Optional — Google OAuth for web app user sign-in
+    # Separate from GMAIL_* vars (those are for the service-level Gmail API)
+    google_oauth_client_id: Optional[str] = None
+    google_oauth_client_secret: Optional[str] = None
+    google_oauth_redirect_uri: Optional[str] = None
+
+    # Optional — web app session and unsubscribe link signing
+    session_secret_key: Optional[str] = None
+    unsubscribe_secret_key: Optional[str] = None
+
 
 def _require(key: str) -> str:
     """Return env var value or raise with a clear, actionable message."""
@@ -113,6 +123,11 @@ def _load() -> Config:
         deep_read_threshold=int(os.getenv("DEEP_READ_THRESHOLD", "5")),
         cosine_similarity_threshold=float(os.getenv("COSINE_SIMILARITY_THRESHOLD", "0.82")),
         code_change_notify_email=os.getenv("CODE_CHANGE_NOTIFY_EMAIL") or os.getenv("ALERT_EMAIL"),
+        google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID"),
+        google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
+        google_oauth_redirect_uri=os.getenv("GOOGLE_OAUTH_REDIRECT_URI"),
+        session_secret_key=os.getenv("SESSION_SECRET_KEY"),
+        unsubscribe_secret_key=os.getenv("UNSUBSCRIBE_SECRET_KEY"),
     )
 
 

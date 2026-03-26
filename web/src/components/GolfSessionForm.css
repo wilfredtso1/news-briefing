@@ -1,0 +1,534 @@
+/* Golf Session Form Styles */
+
+.golf-form-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1a472a 0%, #2d5a3f 50%, #1a472a 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+.golf-form-card {
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  width: 100%;
+  max-width: 520px;
+  overflow: hidden;
+}
+
+/* Header */
+.form-header {
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: white;
+  padding: 32px 32px 28px;
+  text-align: center;
+}
+
+.golf-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.form-header h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.form-header .subtitle {
+  margin: 0;
+  font-size: 16px;
+  opacity: 0.95;
+  line-height: 1.5;
+}
+
+.lead-name {
+  font-weight: 600;
+}
+
+.target-date {
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* Form Sections */
+form {
+  padding: 28px 32px;
+}
+
+.form-section {
+  margin-bottom: 28px;
+}
+
+.form-section h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.section-hint {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+/* Attendance Buttons */
+.attendance-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.attendance-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 16px;
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 15px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.attendance-btn:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.attendance-btn .btn-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f3f4f6;
+  font-size: 18px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.attendance-btn.selected.yes {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.attendance-btn.selected.yes .btn-icon {
+  background: #16a34a;
+  color: white;
+}
+
+.attendance-btn.selected.no {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+.attendance-btn.selected.no .btn-icon {
+  background: #dc2626;
+  color: white;
+}
+
+/* Checkbox Cards */
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.checkbox-group.horizontal {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.checkbox-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.checkbox-card:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.checkbox-card.checked {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.checkbox-card input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.checkbox-indicator {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #d1d5db;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.checkbox-card.checked .checkbox-indicator {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: white;
+}
+
+.checkbox-card:not(.checked) .checkbox-indicator svg {
+  opacity: 0;
+}
+
+.checkbox-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+/* Time Slot Cards */
+.time-slots-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.time-card-compact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 12px;
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.time-card-compact:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.time-card-compact.checked {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.time-card-compact input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.time-card-compact .checkbox-indicator {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #d1d5db;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.time-card-compact.checked .checkbox-indicator {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: white;
+}
+
+.time-card-compact:not(.checked) .checkbox-indicator svg {
+  opacity: 0;
+}
+
+.time-slot-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1f2937;
+}
+
+/* Checkbox Pills */
+.checkbox-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 16px;
+  border: 2px solid #e5e7eb;
+  border-radius: 24px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.checkbox-pill input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.checkbox-pill:hover {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.checkbox-pill.checked {
+  border-color: #16a34a;
+  background: #16a34a;
+  color: white;
+}
+
+/* Profile Section */
+.profile-section {
+  background: #f8fafc;
+  margin-left: -32px;
+  margin-right: -32px;
+  padding: 24px 32px;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.profile-header h3 {
+  margin: 0;
+}
+
+.new-badge {
+  background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+/* Form Fields */
+.form-field {
+  margin-top: 20px;
+}
+
+.form-field label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.form-field input[type="text"],
+.form-field input[type="tel"] {
+  width: 100%;
+  padding: 14px 16px;
+  border: 2px solid #e5e7eb;
+  border-radius: 10px;
+  font-size: 15px;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+.form-field input[type="text"]:focus,
+.form-field input[type="tel"]:focus {
+  outline: none;
+  border-color: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1);
+}
+
+.form-field input[type="text"]::placeholder,
+.form-field input[type="tel"]::placeholder {
+  color: #9ca3af;
+}
+
+.field-hint {
+  display: block;
+  font-size: 13px;
+  color: #6b7280;
+  margin-top: 6px;
+}
+
+/* Form Actions */
+.form-actions {
+  margin-top: 32px;
+}
+
+.submit-btn {
+  width: 100%;
+  padding: 16px 24px;
+  background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 14px rgba(22, 163, 74, 0.3);
+}
+
+.submit-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(22, 163, 74, 0.4);
+}
+
+.submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Form Footer */
+.form-footer {
+  text-align: center;
+  padding: 20px 32px 24px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.form-footer p {
+  margin: 0;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.form-footer strong {
+  color: #6b7280;
+}
+
+/* Success State */
+.success-state {
+  padding: 60px 40px;
+  text-align: center;
+}
+
+.success-icon {
+  color: #16a34a;
+  margin-bottom: 20px;
+}
+
+.success-state h2 {
+  margin: 0 0 12px;
+  font-size: 26px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.success-state > p {
+  margin: 0 0 28px;
+  font-size: 16px;
+  color: #6b7280;
+  line-height: 1.6;
+}
+
+.contact-info {
+  background: #f8fafc;
+  padding: 20px 24px;
+  border-radius: 12px;
+}
+
+.contact-info p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.phone-number {
+  font-size: 18px;
+  font-weight: 600;
+  color: #16a34a;
+  letter-spacing: 0.5px;
+}
+
+/* Responsive */
+@media (max-width: 560px) {
+  .golf-form-container {
+    padding: 16px;
+  }
+
+  .golf-form-card {
+    border-radius: 16px;
+  }
+
+  .form-header {
+    padding: 24px 24px 22px;
+  }
+
+  .form-header h1 {
+    font-size: 24px;
+  }
+
+  form {
+    padding: 24px;
+  }
+
+  .attendance-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .time-slots-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .profile-section {
+    margin-left: -24px;
+    margin-right: -24px;
+    padding: 20px 24px;
+  }
+
+  .success-state {
+    padding: 48px 28px;
+  }
+}

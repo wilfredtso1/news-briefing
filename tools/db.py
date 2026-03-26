@@ -560,6 +560,75 @@ def get_pending_onboarding_event() -> dict | None:
         return dict(zip(cols, row))
 
 
+# ---------------------------------------------------------------------------
+# users
+# ---------------------------------------------------------------------------
+
+
+def upsert_user(
+    google_sub: str,
+    email: str,
+    display_name: str | None,
+    refresh_token: str,
+) -> dict:
+    """
+    Insert a new user or update display_name and refresh_token on re-auth.
+    delivery_email defaults to the Google email on first insert.
+    Returns the full user row.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO users (google_sub, email, display_name, refresh_token, delivery_email)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (google_sub) DO UPDATE
+                SET display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+                    refresh_token = EXCLUDED.refresh_token
+            RETURNING *
+            """,
+            (google_sub, email, display_name, refresh_token, email),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {}
+        cols = [d.name for d in cur.description]
+        return dict(zip(cols, row))
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    """Return a user row by UUID, or None if not found."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM users WHERE id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d.name for d in cur.description]
+        return dict(zip(cols, row))
+
+
+def update_user_setup(user_id: str, delivery_email: str, timezone: str) -> None:
+    """Persist delivery email and timezone from the /setup form submission."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET delivery_email = %s, timezone = %s WHERE id = %s",
+            (delivery_email, timezone, user_id),
+        )
+    log.info("user_setup_updated", user_id=user_id, timezone=timezone)
+
+
+def set_user_status(user_id: str, status: str) -> None:
+    """Update a user's status. Valid values: 'active', 'paused', 'deleted'."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE users SET status = %s WHERE id = %s",
+            (status, user_id),
+        )
+    log.info("user_status_updated", user_id=user_id, status=status)
+
+
 def mark_onboarding_applied(event_id: str, raw_reply: str, parsed_preferences: dict) -> None:
     """Record the user's reply and parsed preferences, and mark the event applied."""
     with get_conn() as conn:

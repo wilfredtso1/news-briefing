@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Golf Round - RSVP</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a472a 0%, #2d5a3f 50%, #1a472a 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    .form-card {
+      background: #ffffff;
+      border-radius: 20px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+      width: 100%;
+      max-width: 520px;
+      overflow: hidden;
+    }
+
+    .form-header {
+      background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+      color: white;
+      padding: 32px 32px 28px;
+      text-align: center;
+    }
+
+    .golf-icon { font-size: 48px; margin-bottom: 12px; }
+    .form-header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    .form-header .subtitle { font-size: 16px; opacity: 0.95; line-height: 1.5; }
+    .lead-name { font-weight: 600; }
+    .target-date { font-weight: 600; background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px; }
+
+    form { padding: 28px 32px; }
+    .form-section { margin-bottom: 28px; }
+    .form-section h3 { margin: 0 0 8px; font-size: 18px; font-weight: 600; color: #1f2937; }
+    .section-hint { margin: 0 0 16px; font-size: 14px; color: #6b7280; }
+
+    .attendance-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .attendance-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      padding: 20px 16px; border: 2px solid #e5e7eb; border-radius: 12px;
+      background: #fff; cursor: pointer; font-size: 15px; font-weight: 500; color: #374151;
+      transition: all 0.2s ease;
+    }
+    .attendance-btn:hover { border-color: #d1d5db; background: #f9fafb; }
+    .attendance-btn .btn-icon {
+      width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+      border-radius: 50%; background: #f3f4f6; font-size: 18px; font-weight: 600;
+    }
+    .attendance-btn.selected.yes { border-color: #16a34a; background: #f0fdf4; }
+    .attendance-btn.selected.yes .btn-icon { background: #16a34a; color: white; }
+    .attendance-btn.selected.no { border-color: #dc2626; background: #fef2f2; }
+    .attendance-btn.selected.no .btn-icon { background: #dc2626; color: white; }
+
+    .checkbox-group { display: flex; flex-direction: column; gap: 10px; }
+    .checkbox-card {
+      display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+      border: 2px solid #e5e7eb; border-radius: 12px; background: #fff;
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .checkbox-card:hover { border-color: #d1d5db; background: #f9fafb; }
+    .checkbox-card.checked { border-color: #16a34a; background: #f0fdf4; }
+    .checkbox-card input { display: none; }
+    .checkbox-indicator {
+      width: 24px; height: 24px; border: 2px solid #d1d5db; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .checkbox-card.checked .checkbox-indicator { background: #16a34a; border-color: #16a34a; }
+    .checkbox-indicator svg { opacity: 0; }
+    .checkbox-card.checked .checkbox-indicator svg { opacity: 1; }
+    .checkbox-label { font-size: 15px; font-weight: 500; color: #1f2937; }
+
+    .time-slots-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .time-card-compact {
+      display: flex; align-items: center; gap: 10px; padding: 14px 12px;
+      border: 2px solid #e5e7eb; border-radius: 10px; background: #fff;
+      cursor: pointer; transition: all 0.2s ease;
+    }
+    .time-card-compact:hover { border-color: #d1d5db; background: #f9fafb; }
+    .time-card-compact.checked { border-color: #16a34a; background: #f0fdf4; }
+    .time-card-compact input { display: none; }
+    .time-card-compact .checkbox-indicator { width: 20px; height: 20px; border-radius: 5px; }
+    .time-slot-label { font-size: 14px; font-weight: 500; color: #1f2937; }
+
+    .profile-section {
+      background: #f8fafc; margin: 0 -32px; padding: 24px 32px;
+      border-top: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb;
+    }
+    .profile-header { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+    .new-badge {
+      background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
+      color: white; font-size: 11px; font-weight: 600; text-transform: uppercase;
+      padding: 4px 10px; border-radius: 12px;
+    }
+
+    .form-field { margin-top: 20px; }
+    .form-field label { display: block; font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px; }
+    .form-field input[type="text"], .form-field input[type="tel"] {
+      width: 100%; padding: 14px 16px; border: 2px solid #e5e7eb; border-radius: 10px;
+      font-size: 15px; transition: all 0.2s ease;
+    }
+    .form-field input:focus { outline: none; border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.1); }
+    .form-field input::placeholder { color: #9ca3af; }
+    .field-hint { display: block; font-size: 13px; color: #6b7280; margin-top: 6px; }
+
+    .checkbox-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .checkbox-pill {
+      display: inline-flex; padding: 10px 16px; border: 2px solid #e5e7eb;
+      border-radius: 24px; background: #fff; cursor: pointer; font-size: 14px;
+      font-weight: 500; color: #374151; transition: all 0.2s ease;
+    }
+    .checkbox-pill:hover { border-color: #d1d5db; background: #f9fafb; }
+    .checkbox-pill.checked { border-color: #16a34a; background: #16a34a; color: white; }
+    .checkbox-pill input { display: none; }
+
+    .submit-btn {
+      width: 100%; padding: 16px 24px; margin-top: 32px;
+      background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+      color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600;
+      cursor: pointer; box-shadow: 0 4px 14px rgba(22,163,74,0.3); transition: all 0.2s ease;
+    }
+    .submit-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(22,163,74,0.4); }
+    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .form-footer { text-align: center; padding: 20px 32px 24px; border-top: 1px solid #f3f4f6; }
+    .form-footer p { font-size: 13px; color: #9ca3af; }
+
+    .success-state { padding: 60px 40px; text-align: center; }
+    .success-icon { color: #16a34a; margin-bottom: 20px; }
+    .success-state h2 { font-size: 26px; font-weight: 700; color: #1f2937; margin-bottom: 12px; }
+    .success-state > p { font-size: 16px; color: #6b7280; margin-bottom: 28px; }
+    .contact-info { background: #f8fafc; padding: 20px 24px; border-radius: 12px; }
+    .contact-info p { font-size: 14px; color: #6b7280; margin-bottom: 8px; }
+    .phone-number { font-size: 18px; font-weight: 600; color: #16a34a; }
+
+    .hidden { display: none !important; }
+    .loading { opacity: 0.7; pointer-events: none; }
+
+    @media (max-width: 560px) {
+      body { padding: 16px; }
+      form { padding: 24px; }
+      .attendance-buttons { grid-template-columns: 1fr; }
+      .time-slots-grid { grid-template-columns: repeat(2, 1fr); }
+      .profile-section { margin: 0 -24px; padding: 20px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="form-card">
+    <!-- Form View -->
+    <div id="formView">
+      <div class="form-header">
+        <div class="golf-icon">⛳</div>
+        <h1>Golf Round</h1>
+        <p class="subtitle">
+          <span class="lead-name" id="leadName">Loading...</span> is organizing a round for
+          <span class="target-date" id="targetDate">...</span>
+        </p>
+      </div>
+
+      <form id="rsvpForm">
+        <!-- Attendance -->
+        <div class="form-section">
+          <h3>Are you in?</h3>
+          <div class="attendance-buttons">
+            <button type="button" class="attendance-btn" data-value="yes" onclick="setAttendance(true)">
+              <span class="btn-icon">✓</span>
+              <span>Yes, I'm in!</span>
+            </button>
+            <button type="button" class="attendance-btn" data-value="no" onclick="setAttendance(false)">
+              <span class="btn-icon">✕</span>
+              <span>Can't make it</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Conditional sections (shown when attending) -->
+        <div id="attendingSection" class="hidden">
+          <!-- Courses -->
+          <div class="form-section">
+            <h3>Which courses work for you?</h3>
+            <p class="section-hint">Select all that you'd be happy playing</p>
+            <div class="checkbox-group" id="coursesContainer"></div>
+          </div>
+
+          <!-- Time Slots -->
+          <div class="form-section">
+            <h3>What tee times work for you?</h3>
+            <p class="section-hint">Select all available time windows</p>
+            <div class="checkbox-group time-slots-grid" id="timeSlotsContainer"></div>
+          </div>
+
+          <!-- New Player Profile (conditional) -->
+          <div id="profileSection" class="form-section profile-section hidden">
+            <div class="profile-header">
+              <h3>Quick profile setup</h3>
+              <span class="new-badge">First time</span>
+            </div>
+            <p class="section-hint">This helps us coordinate future rounds faster</p>
+
+            <div class="form-field">
+              <label for="playerName">Your name</label>
+              <input type="text" id="playerName" placeholder="What should we call you?" required>
+            </div>
+
+            <div class="form-field">
+              <label for="playerPhone">Phone number</label>
+              <input type="tel" id="playerPhone" placeholder="(555) 123-4567" required>
+              <span class="field-hint">We'll use this for future round invites</span>
+            </div>
+
+            <div class="form-field">
+              <label>General availability</label>
+              <p class="field-hint">When can you typically play golf?</p>
+              <div class="checkbox-pills" id="generalAvailabilityContainer"></div>
+            </div>
+
+            <div class="form-field">
+              <label for="coursePrefs">Favorite courses</label>
+              <input type="text" id="coursePrefs" placeholder="e.g., Bethpage, Pelham Bay, Van Cortlandt">
+              <span class="field-hint">Comma-separated list of courses you enjoy</span>
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" class="submit-btn" id="submitBtn" disabled>Submit my preferences</button>
+      </form>
+
+      <div class="form-footer">
+        <p>Powered by <strong>Golf Agent</strong> 🤖</p>
+      </div>
+    </div>
+
+    <!-- Success View -->
+    <div id="successView" class="hidden">
+      <div class="success-state">
+        <div class="success-icon">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <polyline points="22 4 12 14.01 9 11.01"/>
+          </svg>
+        </div>
+        <h2>You're all set!</h2>
+        <p id="successMessage"></p>
+        <div class="contact-info">
+          <p>Need to make changes? Text the agent at:</p>
+          <span class="phone-number" id="agentPhoneDisplay"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================
+    // CONFIGURATION - Replace with your Supabase credentials
+    // ============================================================
+    const SUPABASE_URL = 'https://your-project.supabase.co';
+    const SUPABASE_ANON_KEY = 'your-anon-key';
+    const AGENT_PHONE = '(555) 123-4567';
+
+    // Initialize Supabase client
+    // const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // ============================================================
+    // STATE
+    // ============================================================
+    let state = {
+      sessionId: null,
+      playerId: null,
+      isNewPlayer: true,
+      isAttending: null,
+      selectedCourses: [],
+      selectedTimeSlots: [],
+      generalAvailability: [],
+      sessionData: null
+    };
+
+    const TIME_SLOTS = [
+      { id: '9_10am', label: '9–10 AM' },
+      { id: '10_11am', label: '10–11 AM' },
+      { id: '11_12pm', label: '11 AM–12 PM' },
+      { id: '12_1pm', label: '12–1 PM' },
+      { id: '1_2pm', label: '1–2 PM' },
+      { id: '2_3pm', label: '2–3 PM' },
+    ];
+
+    // ============================================================
+    // INITIALIZATION
+    // ============================================================
+    document.addEventListener('DOMContentLoaded', async () => {
+      // Parse URL params
+      const params = new URLSearchParams(window.location.search);
+      state.sessionId = params.get('session_id');
+      state.playerId = params.get('player_id');
+
+      // For demo/development, use mock data if no params
+      if (!state.sessionId) {
+        loadMockData();
+      } else {
+        await loadSessionData();
+      }
+
+      renderTimeSlots();
+      renderGeneralAvailability();
+      document.getElementById('agentPhoneDisplay').textContent = AGENT_PHONE;
+    });
+
+    // ============================================================
+    // DATA LOADING
+    // ============================================================
+    function loadMockData() {
+      // Mock data for development/preview
+      state.sessionData = {
+        leadName: 'Mike',
+        targetDate: 'Saturday, March 14th',
+        candidateCourses: ['Bethpage Black', 'Marine Park', 'Dyker Beach'],
+        agentPhone: AGENT_PHONE
+      };
+      state.isNewPlayer = true;
+
+      document.getElementById('leadName').textContent = state.sessionData.leadName;
+      document.getElementById('targetDate').textContent = state.sessionData.targetDate;
+      renderCourses(state.sessionData.candidateCourses);
+
+      if (state.isNewPlayer) {
+        document.getElementById('profileSection').classList.remove('hidden');
+      }
+    }
+
+    async function loadSessionData() {
+      // TODO: Fetch from Supabase
+      // const { data: session } = await supabase
+      //   .from('sessions')
+      //   .select('*, lead:players!lead_player_id(name)')
+      //   .eq('id', state.sessionId)
+      //   .single();
+      //
+      // const { data: sessionPlayer } = await supabase
+      //   .from('session_players')
+      //   .select('*, player:players(*)')
+      //   .eq('session_id', state.sessionId)
+      //   .eq('player_id', state.playerId)
+      //   .single();
+      //
+      // state.isNewPlayer = !sessionPlayer.player.name;
+      // state.sessionData = {
+      //   leadName: session.lead.name,
+      //   targetDate: formatDate(session.target_date),
+      //   candidateCourses: session.candidate_courses
+      // };
+
+      // For now, fall back to mock
+      loadMockData();
+    }
+
+    // ============================================================
+    // RENDERING
+    // ============================================================
+    function renderCourses(courses) {
+      const container = document.getElementById('coursesContainer');
+      container.innerHTML = courses.map(course => `
+        <label class="checkbox-card" onclick="toggleCourse('${course}')">
+          <input type="checkbox" value="${course}">
+          <span class="checkbox-indicator">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </span>
+          <span class="checkbox-label">${course}</span>
+        </label>
+      `).join('');
+    }
+
+    function renderTimeSlots() {
+      const container = document.getElementById('timeSlotsContainer');
+      container.innerHTML = TIME_SLOTS.map(slot => `
+        <label class="time-card-compact" onclick="toggleTimeSlot('${slot.id}')">
+          <input type="checkbox" value="${slot.id}">
+          <span class="checkbox-indicator">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </span>
+          <span class="time-slot-label">${slot.label}</span>
+        </label>
+      `).join('');
+    }
+
+    function renderGeneralAvailability() {
+      const container = document.getElementById('generalAvailabilityContainer');
+      container.innerHTML = TIME_SLOTS.map(slot => `
+        <label class="checkbox-pill" onclick="toggleGeneralAvailability('${slot.id}')">
+          <input type="checkbox" value="${slot.id}">
+          <span>${slot.label}</span>
+        </label>
+      `).join('');
+    }
+
+    // ============================================================
+    // EVENT HANDLERS
+    // ============================================================
+    function setAttendance(attending) {
+      state.isAttending = attending;
+
+      // Update button states
+      document.querySelectorAll('.attendance-btn').forEach(btn => {
+        btn.classList.remove('selected', 'yes', 'no');
+      });
+
+      const selectedBtn = document.querySelector(`.attendance-btn[data-value="${attending ? 'yes' : 'no'}"]`);
+      selectedBtn.classList.add('selected', attending ? 'yes' : 'no');
+
+      // Show/hide attending section
+      document.getElementById('attendingSection').classList.toggle('hidden', !attending);
+
+      // Update submit button
+      updateSubmitButton();
+    }
+
+    function toggleCourse(course) {
+      const idx = state.selectedCourses.indexOf(course);
+      if (idx > -1) {
+        state.selectedCourses.splice(idx, 1);
+      } else {
+        state.selectedCourses.push(course);
+      }
+
+      // Update UI
+      const card = document.querySelector(`#coursesContainer .checkbox-card input[value="${course}"]`).closest('.checkbox-card');
+      card.classList.toggle('checked', state.selectedCourses.includes(course));
+
+      updateSubmitButton();
+    }
+
+    function toggleTimeSlot(slotId) {
+      const idx = state.selectedTimeSlots.indexOf(slotId);
+      if (idx > -1) {
+        state.selectedTimeSlots.splice(idx, 1);
+      } else {
+        state.selectedTimeSlots.push(slotId);
+      }
+
+      const card = document.querySelector(`#timeSlotsContainer .time-card-compact input[value="${slotId}"]`).closest('.time-card-compact');
+      card.classList.toggle('checked', state.selectedTimeSlots.includes(slotId));
+
+      updateSubmitButton();
+    }
+
+    function toggleGeneralAvailability(slotId) {
+      const idx = state.generalAvailability.indexOf(slotId);
+      if (idx > -1) {
+        state.generalAvailability.splice(idx, 1);
+      } else {
+        state.generalAvailability.push(slotId);
+      }
+
+      const pill = document.querySelector(`#generalAvailabilityContainer .checkbox-pill input[value="${slotId}"]`).closest('.checkbox-pill');
+      pill.classList.toggle('checked', state.generalAvailability.includes(slotId));
+    }
+
+    function updateSubmitButton() {
+      const btn = document.getElementById('submitBtn');
+      const nameInput = document.getElementById('playerName');
+      const phoneInput = document.getElementById('playerPhone');
+
+      let valid = state.isAttending !== null;
+
+      if (state.isAttending) {
+        valid = valid && state.selectedCourses.length > 0 && state.selectedTimeSlots.length > 0;
+
+        if (state.isNewPlayer) {
+          valid = valid && nameInput.value.trim() && phoneInput.value.trim();
+        }
+      }
+
+      btn.disabled = !valid;
+      btn.textContent = state.isAttending === false ? 'Let them know' : 'Submit my preferences';
+    }
+
+    // Listen for input changes on profile fields
+    document.getElementById('playerName')?.addEventListener('input', updateSubmitButton);
+    document.getElementById('playerPhone')?.addEventListener('input', updateSubmitButton);
+
+    // ============================================================
+    // FORM SUBMISSION
+    // ============================================================
+    document.getElementById('rsvpForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Submitting...';
+
+      const formData = {
+        session_id: state.sessionId,
+        player_id: state.playerId,
+        status: state.isAttending ? 'confirmed' : 'declined',
+        available_time_blocks: state.selectedTimeSlots,
+        approved_courses: state.selectedCourses,
+        responded_at: new Date().toISOString()
+      };
+
+      // New player profile data
+      if (state.isNewPlayer && state.isAttending) {
+        formData.playerProfile = {
+          name: document.getElementById('playerName').value.trim(),
+          phone: document.getElementById('playerPhone').value.trim(),
+          general_availability: state.generalAvailability,
+          course_preferences: document.getElementById('coursePrefs').value
+            .split(',').map(c => c.trim()).filter(Boolean)
+        };
+      }
+
+      console.log('Submitting:', formData);
+
+      try {
+        // TODO: Write to Supabase
+        // await supabase.from('session_players').upsert({
+        //   session_id: formData.session_id,
+        //   player_id: formData.player_id,
+        //   status: formData.status,
+        //   available_time_blocks: formData.available_time_blocks,
+        //   approved_courses: formData.approved_courses,
+        //   responded_at: formData.responded_at
+        // });
+        //
+        // if (formData.playerProfile) {
+        //   await supabase.from('players').update({
+        //     name: formData.playerProfile.name,
+        //     phone: formData.playerProfile.phone,
+        //     general_availability: formData.playerProfile.general_availability,
+        //     course_preferences: formData.playerProfile.course_preferences
+        //   }).eq('id', state.playerId);
+        // }
+
+        // Simulate API delay
+        await new Promise(r => setTimeout(r, 800));
+
+        showSuccess();
+      } catch (error) {
+        console.error('Submission error:', error);
+        btn.disabled = false;
+        btn.textContent = 'Submit my preferences';
+        alert('Something went wrong. Please try again.');
+      }
+    });
+
+    function showSuccess() {
+      document.getElementById('formView').classList.add('hidden');
+      document.getElementById('successView').classList.remove('hidden');
+
+      const message = state.isAttending
+        ? `${state.sessionData.leadName} will get back to you once everyone responds.`
+        : `We've let ${state.sessionData.leadName} know you can't make it this time.`;
+
+      document.getElementById('successMessage').textContent = message;
+    }
+  </script>
+</body>
+</html>

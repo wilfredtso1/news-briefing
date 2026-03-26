@@ -4,6 +4,100 @@ Foundational decisions made before development began are documented in `CLAUDE.m
 
 ---
 
+## 2026-03-26: Web app served as static files from FastAPI
+
+**Status**: Accepted
+
+**Context**: The React SPA needs to be hosted somewhere. Options are a separate static hosting service (Vercel, Netlify) or bundling into the existing Railway FastAPI service.
+
+**Options considered**:
+1. **Vercel/Netlify** — Pros: free tier, fast CDN, automatic deploys from git. Cons: CORS configuration required; two deploy targets to manage; session cookie must be cross-origin (complicates `httponly` + `samesite=lax` requirements).
+2. **FastAPI static mount** — `app.mount("/", StaticFiles(directory="static", html=True))` at end of `main.py`. Build step copies `dist/` to `static/`. Pros: one service, no CORS, session cookies work natively. Cons: Railway redeploys on every frontend change; static/ must be excluded from git and built at deploy time.
+
+**Decision**: FastAPI static mount (Option 2). One Railway service is simpler. Session cookies work correctly with no CORS config. The static mount is guarded by `if os.path.isdir("static")` so the app starts cleanly before the first build. The API routes (`/auth/*`, `/api/*`, `/jobs/*`) are registered before the catch-all, so the SPA only receives paths not matched by any API route.
+
+**Consequences**: React app rebuild required on every UI change before deploying. Add `static/` to `.gitignore`. Railway build command must run `bun run build && cp -r dist/ static/` before starting uvicorn.
+
+---
+
+## 2026-03-26: Separate Google OAuth client for web app sign-in
+
+**Status**: Accepted
+
+**Context**: The pipeline uses `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` for service-level Gmail API access via a manually-obtained refresh token. The web app needs a different OAuth flow: redirect-based, short-lived authorization codes, where each user gets their own refresh token.
+
+**Options considered**:
+1. **Reuse existing GMAIL_* credentials** — The existing credentials are for a "Desktop app" OAuth client type in Google Cloud Console. Desktop app clients don't support `https://` redirect URIs, so the authorization code flow for web users would fail.
+2. **New "Web application" OAuth client in the same Google Cloud project** — Pros: scoped correctly for redirect flows, supports `https://` redirect URIs, production-safe. Cons: must add redirect URIs in Google Console for each environment (local, staging, production).
+
+**Decision**: New "Web application" OAuth client (Option 2). This is required — desktop app credentials cannot be used for web redirect flows. The `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` env vars are distinct from `GMAIL_CLIENT_ID` / `GMAIL_CLIENT_SECRET` to make this separation explicit. Both can live in the same Google Cloud project.
+
+**Redirect URI to authorize**: `https://news-briefings-agent-production.up.railway.app/auth/google/callback`
+
+**Consequences**: Two OAuth clients to manage in Google Console. `refresh_token` from user sign-in stored in `users` table — this is the per-user Gmail access credential. Future: encrypt at rest with Fernet before storing.
+
+---
+
+## 2026-03-26: refresh_token stored unencrypted for now
+
+**Status**: Accepted (temporary) — encrypt before opening to other users
+
+**Context**: User OAuth refresh tokens grant Gmail access and must be stored in the `users` table to call Gmail on their behalf. Encrypting at rest adds complexity (Fernet key rotation, key management).
+
+**Decision**: Store plaintext for now. This is a personal tool with a single user. Before opening to other users, add `cryptography` library (Fernet), store `FERNET_KEY` in Railway, encrypt on write, decrypt on read. Noted in TODO.md and web-integration-spec.md.
+
+**Consequences**: Acceptable risk for single-user personal tool. Must be addressed before any public beta.
+
+---
+
+## 2026-03-26: `/api/unsubscribe` not `/unsubscribe` for one-click unsubscribe
+
+**Status**: Accepted
+
+**Context**: The spec had the one-click unsubscribe endpoint at `GET /unsubscribe`. But the React SPA has a `<Route path="/unsubscribe">` that renders the confirmation page. If FastAPI registers `@app.get("/unsubscribe")`, it intercepts all requests to that path — including the SPA page load — and the React component never renders.
+
+**Decision**: Move the endpoint to `GET /api/unsubscribe?token=...`. Email footer unsubscribe links use `/api/unsubscribe`. After validating the token and marking the user deleted, the endpoint redirects to `/unsubscribe` which the static file mount serves as the SPA (React renders `UnsubscribePage`). The clean separation of `/api/*` for backend and everything else for the SPA catches-all is maintained.
+
+**Consequences**: Unsubscribe links in email footers must use `/api/unsubscribe?token=...` not `/unsubscribe?token=...`. Update `_make_unsubscribe_token` call sites when wiring to the formatter.
+
+---
+
+## 2026-03-26: CodeChangeAgent for structural/unknown supervisor feedback
+
+**Status**: Accepted — implementation deferred to Phase 7
+
+**Context**: The immediate supervisor handles config key changes (topic_weights, word_budget, etc.) automatically. But a class of user feedback doesn't map to any config key — "I want sports headlines", "include Morning Brew in the brief", "why no markets data?" — and currently gets silently queued with no action path. For a personal tool, this means valid feedback goes unaddressed unless the developer manually reads the queue and codes a fix.
+
+**Options considered**:
+1. **Expand LOW_RISK_CONFIG_KEYS indefinitely** — Add new config keys for every pattern that emerges. Pros: simple, predictable. Cons: can't anticipate every feedback pattern; fundamentally limited by what the developer hard-codes.
+2. **Human review queue** — All unknown feedback queued to a dashboard; developer handles manually. Pros: safe. Cons: requires developer attention; feedback loop takes days not minutes; defeats the purpose of a self-improving agent.
+3. **CodeChangeAgent using Anthropic API tool use** — When feedback doesn't map to a config key, invoke an agent with `read_file`, `write_file`, `run_bash` tools. Agent reads the codebase, drafts a fix, runs tests, emails a diff for approval. User replies "approve" to deploy. Pros: handles genuinely novel feedback; maintains human oversight via approval gate; test suite prevents regressions. Cons: more complex; requires careful scope constraints to prevent unsafe changes.
+
+**Decision**: CodeChangeAgent (Option 3). The approval gate (email diff → user replies "approve" → git push → Railway deploy) provides the safety that makes autonomous code changes acceptable. The test suite pass requirement is a hard gate — no diff is proposed if tests fail. Scope constraints (no schema migrations, no `main.py` job routing) keep the blast radius bounded.
+
+**Email subject**: `product input required for news briefing` — distinct from pipeline alerts so the user can filter/route it separately.
+
+**Consequences**: Unknown feedback now has an action path. The agent may occasionally propose wrong changes — the approval gate catches these. Over time, as common patterns get added to LOW_RISK_CONFIG_KEYS, the CodeChangeAgent is invoked less frequently for routine things and more for genuinely novel structural requests.
+
+---
+
+## 2026-03-26: Source classifier must respect user-confirmed DB types
+
+**Status**: Accepted — implementation in Immediate Fixes
+
+**Context**: The source classifier uses email body length as a heuristic to determine whether a newsletter is `news_brief` or `long_form`. Morning Brew is a daily news digest but has a long body, so it gets classified as `long_form` every run and routed to the deep read queue — entirely excluded from the daily brief. The `newsletter_sources` table has a `type` column that can hold a user-confirmed classification, but the classifier never reads it.
+
+**Options considered**:
+1. **`source_type_overrides` in agent_config** — A separate dict in agent_config that the classifier checks. Pros: agent_config already has supervisor write access. Cons: duplicates data that `newsletter_sources.type` already stores; two sources of truth for source type.
+2. **Classifier reads `newsletter_sources.type` for known sources** — Before running the length heuristic, look up the sender in the DB. If a type is already stored, use it. Only fall back to the heuristic for first-seen senders. Pros: single source of truth; the DB column already exists for this purpose. Cons: adds a DB read per email classified (acceptable — classifier already upserts to DB).
+3. **Hard-code correct types in `KNOWN_NEWS_BRIEF_SENDERS`** — Add Morning Brew, Axios Markets, etc. to the known-sender sets. Pros: no DB read. Cons: must be maintained in code; doesn't generalize to sources discovered through onboarding.
+
+**Decision**: Option 2 (DB lookup) as the primary mechanism, plus Option 3 for sources we already know are misclassified (`crew@morningbrew.com`, `markets@axios.com`). The hard-codes are a safety net for before onboarding runs; the DB lookup is the long-term mechanism that makes user corrections durable.
+
+**Consequences**: After onboarding confirms source types, re-classification errors are permanently fixed without code changes. The classifier DB read is bounded to `newsletter_sources` which is a small table.
+
+---
+
 ## 2026-03-26: On-demand pipeline trigger via email command
 
 **Status**: Accepted

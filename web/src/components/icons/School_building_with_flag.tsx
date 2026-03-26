@@ -1,0 +1,15 @@
+import type { JSX } from 'react/jsx-runtime'
+
+
+import React from 'react';
+
+export const School_building_with_flag = () => {
+    return (
+<svg xmlns={"http://www.w3.org/2000/svg"} viewBox={"0 0 20 20"} width={"1em"} className={"NotionIconSvgWrapper_icon__8quiY NotionIconSvgWrapper_colorPurple__6zdZg TemplateGallerySubNavigationWithCategories_categoryIconSize__L9pN3"}>
+<path d={"m13.75 7.5-3.125-3.125v-1.25l2.5-1.25V.625h-3.75v3.75L6.25 7.5H2.5v9.375h6.25V13.75c0-.772.478-1.25 1.25-1.25s1.25.478 1.25 1.25v3.125h6.25V7.5zM6.875 15h-2.5v-1.875h2.5zm0-3.75h-2.5V9.375h2.5zM10 10.625a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5M15.625 15h-2.5v-1.875h2.5zm0-3.75h-2.5V9.375h2.5z"} fill={"currentColor"}></path>
+</svg>    );
+}
+
+
+
+export default School_building_with_flag

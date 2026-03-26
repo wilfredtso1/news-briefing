@@ -21,20 +21,22 @@ The full product spec is in `SPEC.md`. Read it before making significant changes
 ```
 First run
     ↓
-[Onboarding Agent] — scans inbox, emails user a source list, processes reply
-    ↓ (sets initial agent_config + newsletter_sources trust_weights)
+[Onboarding Agent] — scans inbox, emails user a source list with type corrections, processes reply
+    ↓ (sets initial agent_config + newsletter_sources trust_weights + source types)
 
 Gmail Inbox
     ↓
 [Source Classifier] — detects newsletters via List-Unsubscribe header + sender patterns
+    ↓ checks newsletter_sources.type before running length heuristic
     ↓ (news-brief)              ↓ (long-form)
 [Daily Brief Pipeline]     [Deep Read Queue]
     ↓                               ↓
 [Story Extractor]          [Deep Read Pipeline]
 [Embedder + Clusterer]              ↓
 [Web Search Enrichment]    [Deep Read Email]
-[Synthesizer]
-[Ranker + Formatter]
+[Web Topic Gap Fill]  ← agent_config: web_search_topics
+[Synthesizer]         ← agent_config: synthesis_style_notes
+[Ranker + Formatter]  ← agent_config: topic_weights, word_budget, source_trust_overrides
     ↓
 [Daily Brief Email]
     ↓
@@ -43,6 +45,23 @@ Gmail Inbox
 User replies to any digest
     ↓
 [Supervisor Agent — Immediate Mode] — LangGraph
+    ├── known config key (topic_weights, word_budget, synthesis_style_notes,
+    │   web_search_topics, cosine_similarity_threshold) → auto-apply
+    ├── source reclassification request → update newsletter_sources.type
+    ├── unsubscribe → queue for confirmation
+    └── unknown/structural → [CodeChangeAgent]
+                                  ↓
+                         Anthropic API + tool use
+                         (read_file, write_file, run_bash)
+                                  ↓
+                         run pytest — must pass
+                                  ↓
+                         email diff to user
+                         subject: "product input required for news briefing"
+                                  ↓
+                         user replies "approve"
+                                  ↓
+                         git push → Railway auto-deploy
     ↓ (weekly)
 [Supervisor Agent — Pattern Sweep] — LangGraph
 
@@ -159,6 +178,14 @@ See `schema.sql` (to be created in Phase 1). Key tables:
 - Pipeline failure retry logic + alert email
 - Error handling and resilience hardening
 
+### Phase 7 — Self-Improving Agent ◯
+- `supervisor/code_change_agent.py` — Anthropic API agent with `read_file`, `write_file`, `run_bash` tools
+- Triggered by `validate_change_node` when feedback doesn't map to any known config key
+- Drafts code changes, runs test suite as gate, emails diff to user
+- Subject line: `product input required for news briefing`
+- Approval reply triggers `git push` → Railway auto-deploys
+- Scope constraints: no schema migrations, no `main.py` job routing changes without flagging for manual review
+
 ### Phase 6 — Onboarding ◯
 - `pipeline/onboarding.py` — first-run flow: scan inbox via source_classifier, build discovered source list, send setup email asking user to identify important sources
 - `onboarding_events` table migration — stores setup email thread_id, raw reply, parsed preferences, applied status
@@ -215,7 +242,8 @@ news-briefing-agent/
 │   └── formatter.py        # Digest formatting + word budget
 ├── supervisor/
 │   ├── immediate.py        # LangGraph supervisor — reply-triggered
-│   └── weekly.py           # LangGraph supervisor — pattern sweep
+│   ├── weekly.py           # LangGraph supervisor — pattern sweep
+│   └── code_change_agent.py  # Anthropic tool-use agent for structural changes (Phase 7)
 ├── tools/
 │   └── db.py               # Supabase/Postgres helpers
 └── tests/
@@ -244,6 +272,16 @@ Required:
 - `TAVILY_API_KEY` — Web search enrichment
 - `LANGCHAIN_API_KEY` — LangSmith tracing
 - `DATABASE_URL` — Supabase PostgreSQL connection string
+
+Optional:
+- `ALERT_EMAIL` — recipient for pipeline failure alerts
+- `CODE_CHANGE_NOTIFY_EMAIL` — recipient for CodeChangeAgent diffs and approvals (defaults to `ALERT_EMAIL` if not set)
+- `GOOGLE_OAUTH_CLIENT_ID` — OAuth 2.0 "Web application" client ID for user sign-in (separate from `GMAIL_CLIENT_ID`)
+- `GOOGLE_OAUTH_CLIENT_SECRET` — paired secret for the web app OAuth client
+- `GOOGLE_OAUTH_REDIRECT_URI` — must match an authorized redirect URI in Google Cloud Console (e.g. `https://[domain]/auth/google/callback`)
+- `SESSION_SECRET_KEY` — 32-byte hex string for signing session cookies with `itsdangerous`
+- `UNSUBSCRIBE_SECRET_KEY` — 32-byte hex string for HMAC-signing unsubscribe tokens in brief footers
+
 All env vars must follow the configuration rules in Part 2 (validate at startup, no magic strings, type-safe parsing).
 
 ---
