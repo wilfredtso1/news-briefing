@@ -244,6 +244,34 @@ class GmailService:
     # Anchor detection
     # ---------------------------------------------------------------------------
 
+    def list_messages_with_query(self, q: str, max_results: int = 10) -> list[EmailMessage]:
+        """
+        Return parsed EmailMessage objects matching an arbitrary Gmail search query.
+
+        Uses the Gmail API q= parameter — supports the same syntax as the Gmail
+        search bar (e.g. "from:me to:me is:unread", "subject:brief is:unread").
+
+        Fetches up to max_results messages. Skips individual messages that fail
+        to parse so a single bad email doesn't abort the scan.
+        """
+        result = self._service.users().messages().list(
+            userId="me",
+            q=q,
+            maxResults=max_results,
+        ).execute()
+
+        message_ids = [m["id"] for m in result.get("messages", [])]
+        if not message_ids:
+            return []
+
+        messages = []
+        for msg_id in message_ids:
+            try:
+                messages.append(self.get_message(msg_id))
+            except HttpError as e:
+                log.warning("gmail_query_message_fetch_failed", message_id=msg_id, error=str(e))
+        return messages
+
     def check_anchor_sources_present(self, anchor_emails: tuple[str, ...]) -> bool:
         """
         Return True if all anchor sender addresses have a message in the inbox

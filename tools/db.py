@@ -57,7 +57,7 @@ def upsert_newsletter_source(
     source_type must be 'news_brief', 'long_form', or 'unknown'.
     """
     with get_conn() as conn:
-        row = conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO newsletter_sources (name, sender_email, type, unsubscribe_header)
             VALUES (%s, %s, %s, %s)
@@ -68,18 +68,37 @@ def upsert_newsletter_source(
             RETURNING *
             """,
             (name, sender_email, source_type, unsubscribe_header),
-        ).fetchone()
-    return dict(zip([col.name for col in conn.description if False] + list(row.keys() if hasattr(row, 'keys') else []), row)) if row else {}
+        )
+        row = cur.fetchone()
+        if not row:
+            return {}
+        cols = [d.name for d in cur.description]
+        return dict(zip(cols, row))
 
 
 def get_active_sources() -> list[dict]:
     """Return all sources with status='active' or 'deprioritized'."""
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             "SELECT * FROM newsletter_sources WHERE status IN ('active', 'deprioritized') ORDER BY trust_weight DESC"
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
+
+
+def get_source_by_email(sender_email: str) -> dict | None:
+    """Return a single newsletter source by sender email, or None if not found."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM newsletter_sources WHERE sender_email = %s",
+            (sender_email,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d.name for d in cur.description]
+        return dict(zip(cols, row))
 
 
 def mark_source_unsubscribed(sender_email: str) -> None:
@@ -100,6 +119,16 @@ def deprioritize_source(sender_email: str) -> None:
             (sender_email,),
         )
     log.info("source_deprioritized", sender_email=sender_email)
+
+
+def update_source_trust_weight(sender_email: str, trust_weight: float) -> None:
+    """Update a source's trust weight. Used by the onboarding agent to boost important sources."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE newsletter_sources SET trust_weight = %s WHERE sender_email = %s",
+            (trust_weight, sender_email),
+        )
+    log.info("source_trust_weight_updated", sender_email=sender_email, trust_weight=trust_weight)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +198,7 @@ def get_unacknowledged_digests(digest_type: str = "daily_brief", days_back: int 
     Used by the weekend catch-up pipeline to find missed content.
     """
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT * FROM digests
             WHERE type = %s
@@ -180,8 +209,9 @@ def get_unacknowledged_digests(digest_type: str = "daily_brief", days_back: int 
             LIMIT 50
             """,
             (digest_type, days_back),
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
 
 
@@ -214,6 +244,32 @@ def get_or_create_cluster(canonical_title: str) -> str:
             (cluster_id, canonical_title),
         )
         return cluster_id
+
+
+def mark_clusters_read(digest_id: str) -> None:
+    """
+    Mark all story_clusters referenced by this digest's stories as read.
+
+    Sets read_at = NOW() on each cluster so any future get_unacknowledged_stories
+    call excludes them — even across different digests that contain the same cluster.
+
+    Idempotent: already-read clusters are not re-stamped (AND read_at IS NULL guard).
+    Called automatically from mark_digest_acknowledged.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE story_clusters
+            SET read_at = NOW()
+            WHERE id IN (
+                SELECT cluster_id FROM stories
+                WHERE digest_id = %s AND cluster_id IS NOT NULL
+            )
+            AND read_at IS NULL
+            """,
+            (digest_id,),
+        )
+    log.info("clusters_marked_read", digest_id=digest_id)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +305,7 @@ def get_recent_story_embeddings(days_back: int = 2) -> list[dict]:
     Used by the embedder to avoid re-synthesizing stories already covered.
     """
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT s.id, s.title, s.embedding, s.cluster_id
             FROM stories s
@@ -260,15 +316,16 @@ def get_recent_story_embeddings(days_back: int = 2) -> list[dict]:
             LIMIT 200
             """,
             (days_back,),
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
 
 
 def get_stories_for_digest(digest_id: str) -> list[dict]:
     """Return all stories for a given digest, ordered by treatment then topic."""
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT * FROM stories
             WHERE digest_id = %s
@@ -277,8 +334,9 @@ def get_stories_for_digest(digest_id: str) -> list[dict]:
                 topic NULLS LAST
             """,
             (digest_id,),
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
 
 
@@ -289,7 +347,7 @@ def get_unacknowledged_stories(days_back: int = 7) -> list[dict]:
     Deduplicates by cluster_id — same story appearing on multiple days appears once.
     """
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT DISTINCT ON (COALESCE(s.cluster_id::text, s.id::text))
                 s.*, d.sent_at as digest_sent_at
@@ -303,8 +361,9 @@ def get_unacknowledged_stories(days_back: int = 7) -> list[dict]:
             LIMIT 100
             """,
             (days_back,),
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
 
 
@@ -340,10 +399,31 @@ def mark_feedback_applied(event_id: str) -> None:
         )
 
 
+def get_weekly_digest_stats(days_back: int = 7) -> list[dict]:
+    """
+    Return all sent digests from the last N days with acknowledgment status.
+    Used by the weekly supervisor to analyze engagement patterns.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            SELECT id, type, sent_at, acknowledged_at, word_count, story_count
+            FROM digests
+            WHERE sent_at >= NOW() - INTERVAL '%s days'
+            ORDER BY sent_at ASC
+            LIMIT 50
+            """,
+            (days_back,),
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+
 def get_recent_feedback(days_back: int = 7) -> list[dict]:
     """Return feedback events from the last N days for the weekly supervisor sweep."""
     with get_conn() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT * FROM feedback_events
             WHERE created_at >= NOW() - INTERVAL '%s days'
@@ -351,8 +431,9 @@ def get_recent_feedback(days_back: int = 7) -> list[dict]:
             LIMIT 100
             """,
             (days_back,),
-        ).fetchall()
-        cols = [d.name for d in conn.description]
+        )
+        rows = cur.fetchall()
+        cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in rows]
 
 
@@ -419,3 +500,68 @@ def rollback_config(key: str) -> bool:
         )
     log.info("config_rolled_back", key=key)
     return True
+
+
+# ---------------------------------------------------------------------------
+# onboarding_events
+# ---------------------------------------------------------------------------
+
+
+def create_onboarding_event() -> str:
+    """
+    Insert a new onboarding event row. Returns the new event UUID.
+    thread_id and sent_message_id are NULL until the setup email is sent —
+    call update_onboarding_thread() immediately after send_message() returns.
+    """
+    event_id = str(uuid.uuid4())
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO onboarding_events (id) VALUES (%s)",
+            (event_id,),
+        )
+    log.info("onboarding_event_created", event_id=event_id)
+    return event_id
+
+
+def update_onboarding_thread(event_id: str, thread_id: str, sent_message_id: str) -> None:
+    """Store the Gmail thread and message IDs after the setup email is sent."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE onboarding_events SET thread_id = %s, sent_message_id = %s WHERE id = %s",
+            (thread_id, sent_message_id, event_id),
+        )
+    log.info("onboarding_thread_stored", event_id=event_id, thread_id=thread_id)
+
+
+def get_pending_onboarding_event() -> dict | None:
+    """
+    Return the most recent unapplied onboarding event, or None if not found.
+    A pending event means the setup email was sent but no reply has been processed yet.
+    Also returns events with no thread_id yet (created but email not yet sent).
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT * FROM onboarding_events WHERE applied = FALSE ORDER BY created_at DESC LIMIT 1",
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d.name for d in cur.description]
+        return dict(zip(cols, row))
+
+
+def mark_onboarding_applied(event_id: str, raw_reply: str, parsed_preferences: dict) -> None:
+    """Record the user's reply and parsed preferences, and mark the event applied."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE onboarding_events
+            SET applied = TRUE,
+                applied_at = NOW(),
+                raw_reply = %s,
+                parsed_preferences = %s::jsonb
+            WHERE id = %s
+            """,
+            (raw_reply, psycopg.types.json.Jsonb(parsed_preferences), event_id),
+        )
+    log.info("onboarding_applied", event_id=event_id)

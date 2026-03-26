@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased] — 2026-03-26
+
+### Added
+- **On-demand pipeline trigger via email** — User can reply to any digest (or send a self-addressed email) saying "send brief" or "deep read" to trigger a pipeline run within ~15 minutes, bypassing anchor checks and queue thresholds. Implemented as a new `"command"` reply type in the immediate supervisor graph with two new nodes (`extract_command`, `execute_command`); `_check_inbox_commands` helper in `main.py` handles the self-email failsafe path. `run_deep_read` gains a `force=True` parameter to bypass threshold and minimum article count.
+- **Cluster-level read tracking** — Acknowledging any digest now marks all its `story_clusters` as read via the new `mark_clusters_read()` helper. `get_unacknowledged_stories` excludes read clusters, so a story that appeared in two digests (e.g. daily brief + on-demand brief) won't resurface in the weekend catch-up once the user acknowledges either. Requires `migrations/002_story_clusters_add_read_at.sql`.
+- `gmail_service.GmailService.list_messages_with_query(q, max_results)` — queries Gmail with arbitrary `q=` syntax; used by inbox command detection.
+- `supervisor/immediate.classify_command(text)` — public helper for classifying free-form text as `"daily_brief"` or `"deep_read"`; reuses the same Haiku chain as the graph.
+
+---
+
+## [Phase 6 — Onboarding] — 2026-03-26
+
+### Added
+- `pipeline/onboarding.py` — first-run flow: scans inbox via source_classifier, merges with known active sources, sends a setup email listing discovered newsletters by type, processes the user's reply to set source trust weights and topic preferences
+- `migrations/003_onboarding.sql` — `onboarding_events` table (thread_id, sent_message_id, raw_reply, parsed_preferences, applied) + seeds `onboarding_complete: false` in agent_config; kept separate from `feedback_events` which requires a NOT NULL digest_id
+- `tools/db.py`: `create_onboarding_event`, `update_onboarding_thread`, `get_pending_onboarding_event`, `mark_onboarding_applied`, `update_source_trust_weight` helpers
+- `main.py`: `/jobs/onboard` endpoint + `_run_onboard` background task; `_check_onboarding_reply` wired into `_run_poll_replies`; `onboarding_complete` guard in `_run_daily_brief` — pipeline skips with a log warning if user hasn't replied yet
+- `tests/test_onboarding.py` — 23 tests covering all guards, happy path, source weight boosts, topic merging, unsubscribe-not-executed, parse failure resilience, email formatting
+
+---
+
+## [Phase 5 / 6 Integration] — 2026-03-26
+
+### Added
+- `tools/unsubscribe.py` — unsubscribe executor: parses `List-Unsubscribe` header (mailto preferred over URL), executes action, marks source inactive in DB; raises `UnsubscribeError` if action fails before DB update so source is never silently marked inactive
+- `supervisor/weekly.py` — LangGraph weekly pattern sweep: gathers 7 days of digest stats and feedback, Opus reasons over engagement patterns, applies low-risk config changes, sends weekly review email with observations and proposed high-risk changes
+- `railway.toml` + `runtime.txt` — Railway web service config (nixpacks, uvicorn start command, health check, restart policy)
+- CLAUDE.md "Deploying to Railway" section with cron service schedules and start commands
+- `tools/db.py`: `get_source_by_email()` and `get_weekly_digest_stats()` helpers
+
+### Changed
+- `main.py`: `_run_supervisor_weekly` wired to `run_weekly_supervisor` (was a stub)
+
+---
+
 ## [Unreleased] — Integration Sprint
 
 ### Pending Integration

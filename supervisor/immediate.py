@@ -7,8 +7,9 @@ validates whether they are low-risk or high-risk, applies low-risk changes
 immediately, and queues high-risk ones.
 
 Graph structure:
-  START → classify_reply → maybe_acknowledge → route_feedback →
+  START → classify_reply → maybe_acknowledge → route_after_acknowledge →
           [extract_change → validate_change → (apply_change | queue_change) → log_feedback_event]
+          [extract_command → execute_command]
           → END
 
 Reply types:
@@ -16,6 +17,7 @@ Reply types:
   feedback    — user proposes a change; extract and validate it
   both        — acknowledgment + feedback; do both
   irrelevant  — unrelated reply; do nothing
+  command     — user is requesting a pipeline run on demand (e.g. "send brief", "deep read please")
 
 Risk classification:
   low-risk  — topic_weights, word_budget, cosine_similarity_threshold
@@ -44,6 +46,7 @@ Model selection:
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -96,12 +99,14 @@ class SupervisorResult:
     action_taken: human-readable summary of what the supervisor did
     config_delta: {key: new_value} for any config keys immediately updated
     queued_items: list of feedback event IDs created for high-risk items
-    reply_type: one of acknowledge | feedback | both | irrelevant
+    reply_type: one of acknowledge | feedback | both | irrelevant | command
+    command_triggered: "daily_brief" | "deep_read" | "" (empty if no command was run)
     """
     action_taken: str
     config_delta: dict[str, Any] = field(default_factory=dict)
     queued_items: list[str] = field(default_factory=list)
     reply_type: str = "irrelevant"
+    command_triggered: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -116,17 +121,19 @@ class SupervisorState(TypedDict):
     thread_id: str
 
     # Intermediate
-    reply_type: str          # acknowledge | feedback | both | irrelevant
+    reply_type: str          # acknowledge | feedback | both | irrelevant | command
     proposed_key: str        # agent_config key the user wants to change
     proposed_value: Any      # new value to set
     risk_level: str          # low | high | none
     extraction_reasoning: str
+    command_target: str      # daily_brief | deep_read (set by extract_command_node)
 
     # Outputs accumulated across nodes
     config_delta: dict[str, Any]
     queued_items: list[str]
     action_taken: str
     event_id: str
+    command_triggered: str   # pipeline that was triggered on-demand (empty if not a command)
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +142,7 @@ class SupervisorState(TypedDict):
 # We ask for one of four literal strings to keep JsonOutputParser reliable.
 # ---------------------------------------------------------------------------
 
-# Returns one of: "acknowledge", "feedback", "both", "irrelevant"
+# Returns one of: "acknowledge", "feedback", "both", "irrelevant", "command"
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -147,14 +154,43 @@ Types:
 - "acknowledge" — user confirms they read the digest (e.g. "thanks", "got it", "looks good")
 - "feedback" — user requests a change (e.g. "less crypto", "more AI stories", "shorter please")
 - "both" — reply contains both an acknowledgment AND a change request
+- "command" — user is requesting a pipeline run on demand (e.g. "send brief", "send me a deep read", "morning brief please", "give me the news")
 - "irrelevant" — unrelated reply (forwarded email, out-of-office, spam)
 
-Be conservative: only use "feedback" or "both" if the user is clearly requesting a change.""",
+Be conservative: only use "feedback" or "both" if the user is clearly requesting a change.
+Use "command" when the user is explicitly asking for a new digest to be generated — not just acknowledging.""",
     ),
     ("human", "Digest reply:\n{raw_reply}"),
 ])
 
 _classify_chain = _CLASSIFY_PROMPT | _haiku | JsonOutputParser()
+
+
+# ---------------------------------------------------------------------------
+# Prompt: extract command target
+# Determines which pipeline to trigger: daily_brief or deep_read.
+# Haiku is sufficient — two-class classification with a strong default.
+# We ask for JSON with "pipeline" key so JsonOutputParser is reliable.
+# ---------------------------------------------------------------------------
+
+# Returns one of: "daily_brief", "deep_read"
+_EXTRACT_COMMAND_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """You identify which pipeline the user wants to run based on their email message.
+
+Return JSON only: {{"pipeline": "<type>", "reasoning": "<one sentence>"}}
+
+Types:
+- "daily_brief" — user wants their regular news digest (e.g. "send brief", "morning brief", "give me the news", "send it")
+- "deep_read" — user wants long-form articles (e.g. "deep read", "long form", "send me something to read", "deep dive")
+
+Default to "daily_brief" if the intent is unclear or ambiguous.""",
+    ),
+    ("human", "Email message:\n{raw_reply}"),
+])
+
+_extract_command_chain = _EXTRACT_COMMAND_PROMPT | _haiku | JsonOutputParser()
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +242,7 @@ def classify_reply_node(state: SupervisorState) -> dict:
     try:
         result = _classify_chain.invoke({"raw_reply": state["raw_reply"]})
         reply_type = result.get("reply_type", "irrelevant")
-        if reply_type not in {"acknowledge", "feedback", "both", "irrelevant"}:
+        if reply_type not in {"acknowledge", "feedback", "both", "irrelevant", "command"}:
             log.warning("supervisor_classify_unexpected_type", reply_type=reply_type)
             reply_type = "irrelevant"
     except Exception as e:
@@ -414,6 +450,67 @@ def no_op_node(state: SupervisorState) -> dict:
     return state
 
 
+def extract_command_node(state: SupervisorState) -> dict:
+    """
+    Extract which pipeline the user wants to trigger: daily_brief or deep_read.
+    Uses claude-haiku-4-5 — two-class classification, defaults to daily_brief on failure.
+    This is a command reply (not an acknowledgment), so the digest is NOT marked acknowledged.
+    """
+    try:
+        result = _extract_command_chain.invoke({"raw_reply": state["raw_reply"]})
+        command_target = result.get("pipeline", "daily_brief")
+        if command_target not in {"daily_brief", "deep_read"}:
+            log.warning("supervisor_extract_command_unexpected", command_target=command_target)
+            command_target = "daily_brief"
+    except Exception as e:
+        log.warning(
+            "supervisor_extract_command_failed",
+            error=str(e),
+            action="defaulting to daily_brief",
+        )
+        command_target = "daily_brief"
+
+    log.info("supervisor_command_extracted", digest_id=state["digest_id"], command_target=command_target)
+    return {**state, "command_target": command_target}
+
+
+def execute_command_node(state: SupervisorState) -> dict:
+    """
+    Execute the requested pipeline on demand, bypassing anchor and threshold checks.
+
+    Calls pipeline directly — no anchor wait for daily_brief, no queue threshold
+    for deep_read (force=True delivers whatever articles are available, even 1).
+    Pipeline failures are logged and captured in action_taken but do not raise,
+    so the supervisor returns a result regardless of pipeline outcome.
+    """
+    # Normalize: empty string (TypedDict default) falls back to daily_brief
+    command_target = state.get("command_target") or "daily_brief"
+    run_id = str(uuid.uuid4())
+
+    try:
+        if command_target == "deep_read":
+            from pipeline.deep_read import run_deep_read
+            run_deep_read(run_id=run_id, force=True)
+        else:
+            from pipeline.daily_brief import run as run_daily_brief
+            run_daily_brief(run_id=run_id)
+        action = f"triggered {command_target} (run_id={run_id})"
+        log.info("supervisor_command_executed", digest_id=state["digest_id"], command_target=command_target, run_id=run_id)
+    except Exception as e:
+        log.error(
+            "supervisor_execute_command_failed",
+            digest_id=state["digest_id"],
+            command_target=command_target,
+            run_id=run_id,
+            error=str(e),
+        )
+        action = f"command failed: {command_target} — {e}"
+
+    current_action = state.get("action_taken", "")
+    new_action = f"{current_action}; {action}" if current_action else action
+    return {**state, "action_taken": new_action, "command_triggered": command_target}
+
+
 # ---------------------------------------------------------------------------
 # Conditional routing functions
 # ---------------------------------------------------------------------------
@@ -424,6 +521,7 @@ def route_after_acknowledge(state: SupervisorState) -> str:
     After maybe_acknowledge:
     - feedback or both → extract_change (process the config request)
     - acknowledge → END (done — digest acknowledged, no config change)
+    - command → extract_command (determine which pipeline to trigger)
     - irrelevant → no_op
     """
     reply_type = state.get("reply_type", "irrelevant")
@@ -431,6 +529,8 @@ def route_after_acknowledge(state: SupervisorState) -> str:
         return "extract_change"
     if reply_type == "acknowledge":
         return END
+    if reply_type == "command":
+        return "extract_command"
     return "no_op"
 
 
@@ -463,6 +563,8 @@ _builder.add_node("apply_change", apply_change_node)
 _builder.add_node("queue_change", queue_change_node)
 _builder.add_node("log_feedback_event", log_feedback_event_node)
 _builder.add_node("no_op", no_op_node)
+_builder.add_node("extract_command", extract_command_node)
+_builder.add_node("execute_command", execute_command_node)
 
 _builder.add_edge(START, "classify_reply")
 _builder.add_edge("classify_reply", "maybe_acknowledge")
@@ -473,6 +575,8 @@ _builder.add_edge("apply_change", "log_feedback_event")
 _builder.add_edge("queue_change", "log_feedback_event")
 _builder.add_edge("log_feedback_event", END)
 _builder.add_edge("no_op", END)
+_builder.add_edge("extract_command", "execute_command")
+_builder.add_edge("execute_command", END)
 
 _graph = _builder.compile()
 
@@ -522,10 +626,12 @@ def run_immediate_supervisor(
         "proposed_value": None,
         "risk_level": "none",
         "extraction_reasoning": "",
+        "command_target": "",
         "config_delta": {},
         "queued_items": [],
         "action_taken": "",
         "event_id": "",
+        "command_triggered": "",
     }
 
     final_state = _graph.invoke(initial_state)
@@ -535,6 +641,7 @@ def run_immediate_supervisor(
         config_delta=final_state.get("config_delta", {}),
         queued_items=final_state.get("queued_items", []),
         reply_type=final_state.get("reply_type", "irrelevant"),
+        command_triggered=final_state.get("command_triggered", ""),
     )
 
     log.info(
@@ -544,6 +651,25 @@ def run_immediate_supervisor(
         action_taken=result.action_taken,
         config_keys_changed=list(result.config_delta.keys()),
         queued_count=len(result.queued_items),
+        command_triggered=result.command_triggered,
     )
 
     return result
+
+
+def classify_command(text: str) -> str:
+    """
+    Classify free-form text as a pipeline command target.
+
+    Used by main.py to classify self-addressed inbox command emails without
+    going through the full supervisor graph (no digest_id context needed).
+
+    Returns "daily_brief" or "deep_read". Defaults to "daily_brief" on any failure.
+    """
+    try:
+        result = _extract_command_chain.invoke({"raw_reply": text})
+        target = result.get("pipeline", "daily_brief")
+        return target if target in {"daily_brief", "deep_read"} else "daily_brief"
+    except Exception as e:
+        log.warning("supervisor_classify_command_failed", error=str(e), action="defaulting to daily_brief")
+        return "daily_brief"

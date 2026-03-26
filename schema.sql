@@ -66,7 +66,11 @@ CREATE TABLE story_clusters (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     canonical_title TEXT        NOT NULL,
     first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Set when the user acknowledges any digest containing this cluster.
+    -- Prevents the story from re-appearing in future catch-up digests
+    -- even if it was included in a different, unacknowledged digest.
+    read_at         TIMESTAMPTZ
 );
 
 
@@ -153,6 +157,11 @@ CREATE INDEX idx_digests_unacked
 CREATE INDEX idx_digests_thread_id
     ON digests(thread_id)
     WHERE thread_id IS NOT NULL;
+
+-- Unread story clusters (weekend catch-up dedup query)
+CREATE INDEX idx_story_clusters_unread
+    ON story_clusters(id)
+    WHERE read_at IS NULL;
 
 -- Feedback: link back to digest
 CREATE INDEX idx_feedback_digest_id    ON feedback_events(digest_id);

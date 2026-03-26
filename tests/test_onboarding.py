@@ -1,0 +1,445 @@
+"""
+Tests for pipeline/onboarding.py.
+
+LLM calls: mock _parse_reply_chain.invoke directly — never call real Anthropic API.
+Gmail: mock GmailService — never call real Gmail API.
+DB: mock all tools.db helpers — never hit a real database.
+"""
+
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from pipeline.onboarding import (
+    _format_setup_email,
+    process_onboarding_reply,
+    run_onboarding,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_gmail():
+    gmail = MagicMock()
+    gmail.list_inbox_messages.return_value = ["msg_001", "msg_002"]
+    gmail.get_messages.return_value = [
+        MagicMock(sender_email="axiosam@axios.com"),
+        MagicMock(sender_email="newsletters@stratechery.com"),
+    ]
+    gmail.send_message.return_value = ("sent_msg_id", "thread_id_abc")
+    return gmail
+
+
+@pytest.fixture
+def mock_classify_news_brief():
+    result = MagicMock()
+    result.is_newsletter = True
+    result.source_type = "news_brief"
+    result.sender_email = "axiosam@axios.com"
+    result.sender_name = "Axios AM"
+    return result
+
+
+@pytest.fixture
+def mock_classify_long_form():
+    result = MagicMock()
+    result.is_newsletter = True
+    result.source_type = "long_form"
+    result.sender_email = "newsletters@stratechery.com"
+    result.sender_name = "Stratechery"
+    return result
+
+
+@pytest.fixture
+def active_sources():
+    return [
+        {"sender_email": "axiosam@axios.com", "name": "Axios AM", "type": "news_brief"},
+        {"sender_email": "newsletters@stratechery.com", "name": "Stratechery", "type": "long_form"},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# run_onboarding — guard: already complete
+# ---------------------------------------------------------------------------
+
+class TestRunOnboardingAlreadyComplete:
+    def test_returns_already_complete_when_flag_is_true(self):
+        with patch("pipeline.onboarding.get_config", return_value=True):
+            result = run_onboarding(run_id="test-run")
+
+        assert result["status"] == "already_complete"
+
+    def test_does_not_create_gmail_service_when_already_complete(self):
+        with patch("pipeline.onboarding.get_config", return_value=True), \
+             patch("pipeline.onboarding.GmailService") as mock_svc:
+            run_onboarding(run_id="test-run")
+
+        mock_svc.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_onboarding — guard: pending reply
+# ---------------------------------------------------------------------------
+
+class TestRunOnboardingPendingReply:
+    def test_returns_pending_reply_when_event_exists(self):
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event",
+                   return_value={"id": "evt_001", "thread_id": "thr_abc"}):
+            result = run_onboarding(run_id="test-run")
+
+        assert result["status"] == "pending_reply"
+
+    def test_does_not_send_email_when_pending(self, mock_gmail):
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event",
+                   return_value={"id": "evt_001", "thread_id": "thr_abc"}), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail):
+            run_onboarding(run_id="test-run")
+
+        mock_gmail.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_onboarding — happy path: sends email
+# ---------------------------------------------------------------------------
+
+class TestRunOnboardingSendsEmail:
+    def test_returns_sent_status(self, mock_gmail, mock_classify_news_brief, mock_classify_long_form):
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   side_effect=[mock_classify_news_brief, mock_classify_long_form]), \
+             patch("pipeline.onboarding.get_active_sources", return_value=[]), \
+             patch("pipeline.onboarding.create_onboarding_event", return_value="evt_001"), \
+             patch("pipeline.onboarding.update_onboarding_thread"):
+            result = run_onboarding(run_id="test-run")
+
+        assert result["status"] == "sent"
+
+    def test_creates_event_before_sending_email(self, mock_gmail, mock_classify_news_brief):
+        call_order = []
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   return_value=mock_classify_news_brief), \
+             patch("pipeline.onboarding.get_active_sources", return_value=[]), \
+             patch("pipeline.onboarding.create_onboarding_event",
+                   side_effect=lambda: call_order.append("create") or "evt_001"), \
+             patch("pipeline.onboarding.update_onboarding_thread"):
+            mock_gmail.send_message.side_effect = lambda **kwargs: (
+                call_order.append("send") or ("msg_id", "thread_id")
+            )
+            run_onboarding(run_id="test-run")
+
+        assert call_order.index("create") < call_order.index("send")
+
+    def test_stores_thread_id_after_send(self, mock_gmail, mock_classify_news_brief):
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   return_value=mock_classify_news_brief), \
+             patch("pipeline.onboarding.get_active_sources", return_value=[]), \
+             patch("pipeline.onboarding.create_onboarding_event", return_value="evt_001"), \
+             patch("pipeline.onboarding.update_onboarding_thread") as mock_update:
+            run_onboarding(run_id="test-run")
+
+        mock_update.assert_called_once_with("evt_001", "thread_id_abc", "sent_msg_id")
+
+    def test_merges_active_sources_with_discovered(
+        self, mock_gmail, mock_classify_news_brief, active_sources
+    ):
+        # Inbox only has Axios AM; Stratechery should be merged from active_sources
+        mock_gmail.get_messages.return_value = [MagicMock()]
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   return_value=mock_classify_news_brief), \
+             patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding.create_onboarding_event", return_value="evt_001"), \
+             patch("pipeline.onboarding.update_onboarding_thread"):
+            result = run_onboarding(run_id="test-run")
+
+        assert result["status"] == "sent"
+
+
+# ---------------------------------------------------------------------------
+# run_onboarding — no sources found
+# ---------------------------------------------------------------------------
+
+class TestRunOnboardingNoSources:
+    def test_returns_no_sources_found_when_inbox_empty(self, mock_gmail):
+        non_newsletter = MagicMock()
+        non_newsletter.is_newsletter = False
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   return_value=non_newsletter), \
+             patch("pipeline.onboarding.get_active_sources", return_value=[]):
+            result = run_onboarding(run_id="test-run")
+
+        assert result["status"] == "no_sources_found"
+
+    def test_does_not_send_email_when_no_sources(self, mock_gmail):
+        non_newsletter = MagicMock()
+        non_newsletter.is_newsletter = False
+        with patch("pipeline.onboarding.get_config", return_value=False), \
+             patch("pipeline.onboarding.get_pending_onboarding_event", return_value=None), \
+             patch("pipeline.onboarding.GmailService", return_value=mock_gmail), \
+             patch("pipeline.onboarding.source_classifier.classify",
+                   return_value=non_newsletter), \
+             patch("pipeline.onboarding.get_active_sources", return_value=[]):
+            run_onboarding(run_id="test-run")
+
+        mock_gmail.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# process_onboarding_reply — source trust weights
+# ---------------------------------------------------------------------------
+
+class TestProcessOnboardingReplySourceWeights:
+    def test_boosts_trust_weight_for_important_sources(self, active_sources):
+        fake_parsed = {
+            "important_sources": ["axiosam@axios.com"],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "user likes Axios AM",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight") as mock_trust, \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "I love Axios AM", "run_001")
+
+        mock_trust.assert_called_once_with("axiosam@axios.com", 1.8)
+        assert any("axiosam@axios.com" in c for c in result["applied_changes"])
+
+    def test_deprioritizes_specified_sources(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": ["newsletters@stratechery.com"],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "less Stratechery",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source") as mock_deprio, \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "less Stratechery", "run_001")
+
+        mock_deprio.assert_called_once_with("newsletters@stratechery.com")
+        assert any("deprioritized" in c for c in result["applied_changes"])
+
+    def test_does_not_execute_unsubscribe_only_logs(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": ["newsletters@stratechery.com"],
+            "topic_adjustments": {},
+            "notes": "wants to unsubscribe",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            result = process_onboarding_reply("evt_001", "unsubscribe from Stratechery", "run_001")
+
+        # Unsubscribe is noted in applied_changes but NOT executed
+        assert any("pending confirmation" in c for c in result["applied_changes"])
+
+
+# ---------------------------------------------------------------------------
+# process_onboarding_reply — topic adjustments
+# ---------------------------------------------------------------------------
+
+class TestProcessOnboardingReplyTopics:
+    def test_merges_topic_adjustments_with_existing_weights(self, active_sources):
+        existing = {"ai": 1.5, "crypto": 0.5, "sports": 0.3}
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {"crypto": 0.2, "health_tech": 1.8},
+            "notes": "less crypto, more health",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value=existing), \
+             patch("pipeline.onboarding.set_config") as mock_set_config, \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "less crypto, more health", "run_001")
+
+        topic_call = next(
+            c for c in mock_set_config.call_args_list
+            if c.args[0] == "topic_weights"
+        )
+        merged = topic_call.args[1]
+        # Existing keys preserved; updated keys use new values
+        assert merged["ai"] == 1.5
+        assert merged["crypto"] == 0.2
+        assert merged["health_tech"] == 1.8
+        assert merged["sports"] == 0.3
+
+    def test_skips_topic_update_when_no_adjustments(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "no preferences",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config") as mock_set_config, \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "looks good", "run_001")
+
+        # set_config should only be called for onboarding_complete, not topic_weights
+        topic_calls = [c for c in mock_set_config.call_args_list if c.args[0] == "topic_weights"]
+        assert len(topic_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# process_onboarding_reply — marks onboarding complete
+# ---------------------------------------------------------------------------
+
+class TestProcessOnboardingReplyCompletion:
+    def test_always_marks_onboarding_complete(self, active_sources):
+        fake_parsed = {
+            "important_sources": [],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config") as mock_set_config, \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "read", "run_001")
+
+        complete_call = next(
+            c for c in mock_set_config.call_args_list
+            if c.args[0] == "onboarding_complete"
+        )
+        assert complete_call.args[1] is True
+
+    def test_marks_complete_even_when_parse_fails(self, active_sources):
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config") as mock_set_config, \
+             patch("pipeline.onboarding.mark_onboarding_applied"):
+            mock_chain.invoke.side_effect = Exception("LLM timeout")
+            process_onboarding_reply("evt_001", "whatever", "run_001")
+
+        complete_call = next(
+            c for c in mock_set_config.call_args_list
+            if c.args[0] == "onboarding_complete"
+        )
+        assert complete_call.args[1] is True
+
+    def test_calls_mark_onboarding_applied_with_reply_and_preferences(self, active_sources):
+        fake_parsed = {
+            "important_sources": ["axiosam@axios.com"],
+            "deprioritize_sources": [],
+            "unsubscribe_sources": [],
+            "topic_adjustments": {},
+            "notes": "test",
+        }
+        with patch("pipeline.onboarding.get_active_sources", return_value=active_sources), \
+             patch("pipeline.onboarding._parse_reply_chain") as mock_chain, \
+             patch("pipeline.onboarding.update_source_trust_weight"), \
+             patch("pipeline.onboarding.deprioritize_source"), \
+             patch("pipeline.onboarding.get_config", return_value={}), \
+             patch("pipeline.onboarding.set_config"), \
+             patch("pipeline.onboarding.mark_onboarding_applied") as mock_applied:
+            mock_chain.invoke.return_value = fake_parsed
+            process_onboarding_reply("evt_001", "I like Axios AM", "run_001")
+
+        mock_applied.assert_called_once_with("evt_001", "I like Axios AM", fake_parsed)
+
+
+# ---------------------------------------------------------------------------
+# _format_setup_email
+# ---------------------------------------------------------------------------
+
+class TestFormatSetupEmail:
+    def test_splits_news_brief_and_long_form_into_sections(self):
+        discovered = {
+            "axiosam@axios.com": {"name": "Axios AM", "type": "news_brief"},
+            "newsletters@stratechery.com": {"name": "Stratechery", "type": "long_form"},
+        }
+        body = _format_setup_email(discovered)
+        assert "Daily Brief:" in body
+        assert "Long-Form" in body
+        assert "Axios AM" in body
+        assert "Stratechery" in body
+
+    def test_omits_long_form_section_when_none_found(self):
+        discovered = {
+            "axiosam@axios.com": {"name": "Axios AM", "type": "news_brief"},
+        }
+        body = _format_setup_email(discovered)
+        assert "Daily Brief:" in body
+        assert "Long-Form" not in body
+
+    def test_includes_reply_instructions(self):
+        discovered = {
+            "axiosam@axios.com": {"name": "Axios AM", "type": "news_brief"},
+        }
+        body = _format_setup_email(discovered)
+        assert "Reply with:" in body
+        assert "most important sources" in body
+        assert "first daily brief runs after I hear back" in body
+
+    def test_includes_sender_email_in_source_line(self):
+        discovered = {
+            "axiosam@axios.com": {"name": "Axios AM", "type": "news_brief"},
+        }
+        body = _format_setup_email(discovered)
+        assert "axiosam@axios.com" in body
+
+    def test_sources_sorted_alphabetically_by_name(self):
+        discovered = {
+            "z@example.com": {"name": "Zebra Newsletter", "type": "news_brief"},
+            "a@example.com": {"name": "Aardvark Daily", "type": "news_brief"},
+        }
+        body = _format_setup_email(discovered)
+        assert body.index("Aardvark") < body.index("Zebra")

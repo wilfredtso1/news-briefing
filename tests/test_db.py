@@ -114,6 +114,40 @@ class TestDigests:
         found = next((d for d in unacked if d["id"] == digest_id), None)
         assert found is None  # acknowledged — should not appear
 
+    def test_mark_acknowledged_marks_clusters_read(self):
+        """Acknowledging a digest marks its story_clusters as read."""
+        from tools.db import (
+            create_digest, mark_digest_sent, mark_digest_acknowledged,
+            get_or_create_cluster, insert_story, mark_clusters_read,
+        )
+        import tools.db as db_module
+
+        run_id = str(uuid.uuid4())
+        digest_id = create_digest("daily_brief", run_id)
+        mark_digest_sent(digest_id, 500, 1)
+        cluster_id = get_or_create_cluster(f"Test Story {uuid.uuid4().hex[:8]}")
+        insert_story(
+            digest_id=digest_id,
+            cluster_id=cluster_id,
+            title="Test Story",
+            body="body text",
+            treatment="brief",
+            sources=["test@example.com"],
+            topic="tech",
+            embedding=None,
+        )
+
+        mark_digest_acknowledged(digest_id)
+
+        # Verify the cluster is now marked read
+        with db_module.get_conn() as conn:
+            row = conn.execute(
+                "SELECT read_at FROM story_clusters WHERE id = %s",
+                (cluster_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] is not None, "cluster.read_at should be set after acknowledgment"
+
 
 # ---------------------------------------------------------------------------
 # agent_config
@@ -154,3 +188,144 @@ class TestAgentConfig:
 
         result = rollback_config(key)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# story_clusters — cluster-level read tracking
+# ---------------------------------------------------------------------------
+
+
+class TestStoryClusterReadTracking:
+    """
+    Cluster-level read tracking: acknowledging one digest marks its clusters
+    as read so the same stories don't appear in future catch-up digests,
+    even if those stories appeared in a different unacknowledged digest.
+    """
+
+    def _make_digest_with_story(self, cluster_id: str, digest_type: str = "daily_brief"):
+        """Helper: create a sent digest containing one story that shares cluster_id."""
+        from tools.db import create_digest, mark_digest_sent, insert_story
+
+        digest_id = create_digest(digest_type, str(uuid.uuid4()))
+        mark_digest_sent(digest_id, 500, 1)
+        insert_story(
+            digest_id=digest_id,
+            cluster_id=cluster_id,
+            title="Shared Story",
+            body="body text",
+            treatment="brief",
+            sources=["test@example.com"],
+            topic="tech",
+            embedding=None,
+        )
+        return digest_id
+
+    def test_mark_clusters_read_sets_read_at(self):
+        """mark_clusters_read stamps read_at on each cluster referenced by the digest."""
+        import tools.db as db_module
+        from tools.db import get_or_create_cluster, mark_clusters_read
+
+        cluster_id = get_or_create_cluster(f"Cluster {uuid.uuid4().hex[:8]}")
+        digest_id = self._make_digest_with_story(cluster_id)
+
+        mark_clusters_read(digest_id)
+
+        with db_module.get_conn() as conn:
+            row = conn.execute(
+                "SELECT read_at FROM story_clusters WHERE id = %s",
+                (cluster_id,),
+            ).fetchone()
+        assert row[0] is not None, "read_at should be set"
+
+    def test_mark_clusters_read_is_idempotent(self):
+        """Calling mark_clusters_read twice does not overwrite the original timestamp."""
+        import tools.db as db_module
+        from tools.db import get_or_create_cluster, mark_clusters_read
+
+        cluster_id = get_or_create_cluster(f"Idempotent {uuid.uuid4().hex[:8]}")
+        digest_id = self._make_digest_with_story(cluster_id)
+
+        mark_clusters_read(digest_id)
+        with db_module.get_conn() as conn:
+            first_read_at = conn.execute(
+                "SELECT read_at FROM story_clusters WHERE id = %s", (cluster_id,)
+            ).fetchone()[0]
+
+        mark_clusters_read(digest_id)
+        with db_module.get_conn() as conn:
+            second_read_at = conn.execute(
+                "SELECT read_at FROM story_clusters WHERE id = %s", (cluster_id,)
+            ).fetchone()[0]
+
+        assert first_read_at == second_read_at, "read_at should not be overwritten on second call"
+
+    def test_get_unacknowledged_stories_excludes_read_clusters(self):
+        """
+        Core scenario: story appears in digest A and digest B.
+        User acknowledges digest A → cluster marked read.
+        get_unacknowledged_stories should NOT include the story from unacknowledged digest B.
+        """
+        from tools.db import (
+            get_or_create_cluster, mark_digest_acknowledged,
+            get_unacknowledged_stories,
+        )
+
+        cluster_id = get_or_create_cluster(f"Cross-digest Story {uuid.uuid4().hex[:8]}")
+
+        # Digest A and B both contain the same story cluster
+        digest_a = self._make_digest_with_story(cluster_id)
+        digest_b = self._make_digest_with_story(cluster_id)
+
+        # Only acknowledge digest A
+        mark_digest_acknowledged(digest_a)
+
+        # Digest B is unacknowledged — but its cluster is now read via digest A
+        stories = get_unacknowledged_stories(days_back=7)
+        cluster_ids_in_result = {str(s.get("cluster_id")) for s in stories}
+
+        assert cluster_id not in cluster_ids_in_result, (
+            "Story whose cluster was read via digest A should not appear "
+            "in unacknowledged stories even though digest B is unacknowledged"
+        )
+
+    def test_get_unacknowledged_stories_includes_unread_clusters(self):
+        """Stories in unread clusters continue to appear in the catch-up query."""
+        from tools.db import get_or_create_cluster, get_unacknowledged_stories
+
+        cluster_id = get_or_create_cluster(f"Unread Story {uuid.uuid4().hex[:8]}")
+        self._make_digest_with_story(cluster_id)
+
+        # No acknowledgment — cluster is unread
+        stories = get_unacknowledged_stories(days_back=7)
+        cluster_ids_in_result = {str(s.get("cluster_id")) for s in stories}
+
+        assert cluster_id in cluster_ids_in_result, (
+            "Story in an unread cluster should appear in unacknowledged stories"
+        )
+
+    def test_stories_without_cluster_id_always_included(self):
+        """
+        Stories with NULL cluster_id (no cluster assigned) are always included
+        regardless of any other clusters being marked read.
+        """
+        from tools.db import create_digest, mark_digest_sent, insert_story, get_unacknowledged_stories
+
+        digest_id = create_digest("daily_brief", str(uuid.uuid4()))
+        mark_digest_sent(digest_id, 300, 1)
+        # Story with no cluster
+        insert_story(
+            digest_id=digest_id,
+            cluster_id=None,
+            title=f"No-cluster Story {uuid.uuid4().hex[:8]}",
+            body="body text",
+            treatment="brief",
+            sources=["test@example.com"],
+            topic="other",
+            embedding=None,
+        )
+
+        stories = get_unacknowledged_stories(days_back=7)
+        null_cluster_stories = [s for s in stories if s.get("cluster_id") is None]
+        assert len(null_cluster_stories) > 0, (
+            "Stories with NULL cluster_id should always appear in unacknowledged stories"
+        )

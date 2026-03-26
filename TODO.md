@@ -1,14 +1,27 @@
 # TODO
 
+## Phase 6 — Onboarding ✓ Completed 2026-03-26
+
+- [x] Schema migration: `onboarding_events` table + seed `onboarding_complete: false` — migrations/003_onboarding.sql
+- [x] `pipeline/onboarding.py` — inbox scan, setup email, reply processor
+- [x] Wire reply polling: `_check_onboarding_reply` in `_run_poll_replies`
+- [x] `_run_daily_brief()` guard for onboarding_complete
+- [x] `/jobs/onboard` FastAPI endpoint + `_run_onboard` background task
+- [x] `tests/test_onboarding.py` — 23 tests passing
+
+**Remaining action (manual)**: Run `migrations/003_onboarding.sql` against Supabase before first deploy
+
+## Completed
+
+- [x] Cluster-level read tracking — read_at on story_clusters, mark_clusters_read, get_unacknowledged_stories excludes read clusters — Completed 2026-03-26; run migrations/002_story_clusters_add_read_at.sql against Supabase
+- [x] On-demand pipeline trigger via email — "command" reply type in supervisor, self-addressed inbox detection, force mode for deep read — Completed 2026-03-26
+
 ## Remaining Pre-Production Work
 
-- [ ] Run `migrations/001_digests_add_thread_fields.sql` against Supabase — adds thread_id + sent_message_id to digests table
 - [ ] E2E smoke test: daily_brief against real Gmail inbox in dry-run mode (needs live credentials)
 - [ ] E2E test Phase 3 supervisor against real Gmail reply thread (needs live credentials)
 - [ ] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB — `@pytest.mark.e2e`
-- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto, update source status in DB
-- [ ] `supervisor/weekly.py` — LangGraph weekly pattern sweep (needs real feedback_events in DB first)
-- [ ] Railway deployment config + cron schedule setup
+- [ ] Weekly supervisor approval flow: store weekly review as a digest, poll replies, route approvals to immediate supervisor — deferred per DECISIONS.md 2026-03-26
 
 ## Low Priority / Nice to Have
 
@@ -17,6 +30,9 @@
 - [ ] `--dry-run` flag support via CLI entrypoint in `pipeline/daily_brief.py`
 
 ## Completed
+
+- [x] Unsubscribe executor (`tools/unsubscribe.py`), weekly supervisor (`supervisor/weekly.py`), Railway config — Completed 2026-03-26
+- [x] Run `migrations/001_digests_add_thread_fields.sql` against Supabase — Completed 2026-03-26
 
 - [x] Integration sprint: branch merges, schema migration, thread wiring, tracing/retry/alerts — 2026-03-26
 - [x] Phase 3 supervisor reviewed, 64/64 tests passing, pushed to phase-3-supervisor — 2026-03-26

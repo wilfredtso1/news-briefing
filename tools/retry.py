@@ -22,6 +22,7 @@ After all retries are exhausted, the last exception is re-raised.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import Any, Callable
 
@@ -89,8 +90,10 @@ def with_retry(
 
 
 def _sync_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
+    @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         last_exc: BaseException | None = None
+        _fn_name = getattr(fn, '__name__', repr(fn))
         for attempt in range(1, max_attempts + 1):
             try:
                 return fn(*args, **kwargs)
@@ -101,7 +104,7 @@ def _sync_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
 
                 log.warning(
                     "retry_attempt",
-                    fn=fn.__name__,
+                    fn=_fn_name,
                     attempt=attempt,
                     max_attempts=max_attempts,
                     error_type=type(exc).__name__,
@@ -119,14 +122,14 @@ def _sync_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
         # Should not be reached, but satisfies type checker
         raise last_exc  # type: ignore[misc]
 
-    wrapper.__name__ = fn.__name__
-    wrapper.__qualname__ = fn.__qualname__
     return wrapper
 
 
 def _async_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
+    @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         last_exc: BaseException | None = None
+        _fn_name = getattr(fn, '__name__', repr(fn))
         for attempt in range(1, max_attempts + 1):
             try:
                 return await fn(*args, **kwargs)
@@ -137,7 +140,7 @@ def _async_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
 
                 log.warning(
                     "retry_attempt",
-                    fn=fn.__name__,
+                    fn=_fn_name,
                     attempt=attempt,
                     max_attempts=max_attempts,
                     error_type=type(exc).__name__,
@@ -154,6 +157,4 @@ def _async_wrapper(fn: Callable, max_attempts: int, delay: float) -> Callable:
 
         raise last_exc  # type: ignore[misc]
 
-    wrapper.__name__ = fn.__name__
-    wrapper.__qualname__ = fn.__qualname__
     return wrapper

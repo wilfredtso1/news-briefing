@@ -43,10 +43,12 @@ def _make_state(**overrides) -> dict:
         "proposed_value": None,
         "risk_level": "none",
         "extraction_reasoning": "",
+        "command_target": "",
         "config_delta": {},
         "queued_items": [],
         "action_taken": "",
         "event_id": "",
+        "command_triggered": "",
     }
     return {**defaults, **overrides}
 
@@ -501,6 +503,11 @@ class TestRouteAfterAcknowledge:
         result = route_after_acknowledge(_make_state(reply_type="irrelevant"))
         assert result == "no_op"
 
+    def test_command_routes_to_extract_command(self):
+        from supervisor.immediate import route_after_acknowledge
+        result = route_after_acknowledge(_make_state(reply_type="command"))
+        assert result == "extract_command"
+
 
 class TestRouteAfterValidate:
     """route_after_validate routing function."""
@@ -727,6 +734,7 @@ class TestSupervisorResult:
         assert result.config_delta == {}
         assert result.queued_items == []
         assert result.reply_type == "irrelevant"
+        assert result.command_triggered == ""
 
     def test_all_fields_settable(self):
         from supervisor.immediate import SupervisorResult
@@ -784,3 +792,187 @@ class TestPackageExports:
         from supervisor.immediate import SupervisorResult
         r = SupervisorResult(action_taken="test")
         assert r.action_taken == "test"
+
+
+# ---------------------------------------------------------------------------
+# Tests: command reply type (full graph)
+# ---------------------------------------------------------------------------
+
+
+class TestCommandReplyType:
+    """Full graph tests for on-demand pipeline trigger via 'command' reply type."""
+
+    def test_command_reply_triggers_daily_brief(self):
+        """'send brief' classified as command → daily_brief pipeline called."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_command_chain") as mock_extract,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("pipeline.daily_brief.run") as mock_run,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "command"}
+            mock_extract.invoke.return_value = {"pipeline": "daily_brief", "reasoning": "wants news"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "send brief", "thread-1")
+
+        mock_ack.assert_not_called()
+        mock_run.assert_called_once()
+        assert result.reply_type == "command"
+        assert result.command_triggered == "daily_brief"
+        assert result.config_delta == {}
+        assert result.queued_items == []
+
+    def test_command_reply_triggers_deep_read(self):
+        """'send me a deep read' classified as command → deep_read pipeline called with force=True."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_command_chain") as mock_extract,
+            patch("supervisor.immediate.mark_digest_acknowledged") as mock_ack,
+            patch("pipeline.deep_read.run_deep_read") as mock_run,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "command"}
+            mock_extract.invoke.return_value = {"pipeline": "deep_read", "reasoning": "wants long-form"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "send me a deep read", "thread-1")
+
+        mock_ack.assert_not_called()
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("force") is True
+        assert result.reply_type == "command"
+        assert result.command_triggered == "deep_read"
+
+    def test_ambiguous_command_defaults_to_daily_brief(self):
+        """Ambiguous 'send it' → extract_command defaults to daily_brief."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_command_chain") as mock_extract,
+            patch("pipeline.daily_brief.run") as mock_run,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "command"}
+            # LLM returns unknown pipeline value — should be normalised to daily_brief
+            mock_extract.invoke.return_value = {"pipeline": "unknown_pipeline", "reasoning": "unclear"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "send it", "thread-1")
+
+        mock_run.assert_called_once()
+        assert result.command_triggered == "daily_brief"
+
+    def test_command_does_not_call_set_config(self):
+        """Command replies must never touch agent_config."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_command_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("pipeline.daily_brief.run"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "command"}
+            mock_extract.invoke.return_value = {"pipeline": "daily_brief", "reasoning": "wants news"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            run_immediate_supervisor("digest-1", "send brief please", "thread-1")
+
+        mock_set.assert_not_called()
+
+    def test_command_extract_failure_defaults_to_daily_brief(self):
+        """LLM failure in extract_command_node → safe default of daily_brief, no raise."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_command_chain") as mock_extract,
+            patch("pipeline.daily_brief.run") as mock_run,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "command"}
+            mock_extract.invoke.side_effect = RuntimeError("LLM timeout")
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "brief", "thread-1")
+
+        # Should still trigger daily_brief (safe fallback) and not raise
+        mock_run.assert_called_once()
+        assert result.command_triggered == "daily_brief"
+
+
+# ---------------------------------------------------------------------------
+# Tests: extract_command_node and execute_command_node in isolation
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCommandNode:
+    """extract_command_node in isolation."""
+
+    def test_extracts_daily_brief(self):
+        with patch("supervisor.immediate._extract_command_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"pipeline": "daily_brief", "reasoning": "morning news"}
+            from supervisor.immediate import extract_command_node
+            result = extract_command_node(_make_state(raw_reply="send brief"))
+        assert result["command_target"] == "daily_brief"
+
+    def test_extracts_deep_read(self):
+        with patch("supervisor.immediate._extract_command_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"pipeline": "deep_read", "reasoning": "long form"}
+            from supervisor.immediate import extract_command_node
+            result = extract_command_node(_make_state(raw_reply="deep read please"))
+        assert result["command_target"] == "deep_read"
+
+    def test_unexpected_pipeline_value_defaults_to_daily_brief(self):
+        with patch("supervisor.immediate._extract_command_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"pipeline": "weekly_report"}
+            from supervisor.immediate import extract_command_node
+            result = extract_command_node(_make_state())
+        assert result["command_target"] == "daily_brief"
+
+    def test_llm_failure_defaults_to_daily_brief(self):
+        with patch("supervisor.immediate._extract_command_chain") as mock_chain:
+            mock_chain.invoke.side_effect = RuntimeError("API error")
+            from supervisor.immediate import extract_command_node
+            # Should not raise
+            result = extract_command_node(_make_state())
+        assert result["command_target"] == "daily_brief"
+
+
+class TestExecuteCommandNode:
+    """execute_command_node in isolation."""
+
+    def test_calls_daily_brief_run_with_run_id(self):
+        with patch("pipeline.daily_brief.run") as mock_run:
+            from supervisor.immediate import execute_command_node
+            result = execute_command_node(_make_state(command_target="daily_brief"))
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args.kwargs
+        assert "run_id" in call_kwargs
+        assert result["command_triggered"] == "daily_brief"
+        assert "triggered daily_brief" in result["action_taken"]
+
+    def test_calls_deep_read_with_force_true(self):
+        with patch("pipeline.deep_read.run_deep_read") as mock_run:
+            from supervisor.immediate import execute_command_node
+            result = execute_command_node(_make_state(command_target="deep_read"))
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("force") is True
+        assert result["command_triggered"] == "deep_read"
+
+    def test_pipeline_failure_does_not_raise(self):
+        """execute_command_node must not propagate pipeline exceptions."""
+        with patch("pipeline.daily_brief.run") as mock_run:
+            mock_run.side_effect = Exception("pipeline crashed")
+            from supervisor.immediate import execute_command_node
+            # Should not raise
+            result = execute_command_node(_make_state(command_target="daily_brief"))
+
+        assert "command failed" in result["action_taken"]
+        assert result["command_triggered"] == "daily_brief"
+
+    def test_unknown_target_defaults_to_daily_brief(self):
+        """Empty or missing command_target falls back to daily_brief."""
+        with patch("pipeline.daily_brief.run") as mock_run:
+            from supervisor.immediate import execute_command_node
+            result = execute_command_node(_make_state(command_target=""))
+
+        mock_run.assert_called_once()
+        assert result["command_triggered"] == "daily_brief"

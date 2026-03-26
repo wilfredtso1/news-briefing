@@ -2,7 +2,7 @@
 Tests for pipeline/weekend_catchup.py
 
 Unit tests: all DB and gmail_service calls are mocked.
-E2E tests: marked @pytest.mark.e2e — skipped if SUPABASE_URL not set.
+E2E tests: marked @pytest.mark.e2e — skipped if DATABASE_URL not set.
 
 Coverage target: >90% of orchestration logic.
 """
@@ -331,17 +331,17 @@ class TestRunWeekendCatchup:
 
 
 # ---------------------------------------------------------------------------
-# E2E tests (skipped unless SUPABASE_URL is set)
+# E2E tests (skipped unless DATABASE_URL is set)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.e2e
 class TestWeekendCatchupE2E:
-    """Integration tests against real DB. Skipped if SUPABASE_URL not set."""
+    """Integration tests against real DB. Skipped if DATABASE_URL not set."""
 
     @pytest.fixture(autouse=True)
     def require_db(self):
-        if not os.getenv("SUPABASE_URL"):
-            pytest.skip("SUPABASE_URL not set — skipping E2E tests")
+        if not os.getenv("DATABASE_URL"):
+            pytest.skip("DATABASE_URL not set — skipping E2E tests")
 
     def test_get_unacknowledged_stories_returns_list(self):
         """Verify the DB query runs without error and returns a list."""

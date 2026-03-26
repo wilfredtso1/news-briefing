@@ -19,6 +19,11 @@ The full product spec is in `SPEC.md`. Read it before making significant changes
 ## Architecture
 
 ```
+First run
+    ↓
+[Onboarding Agent] — scans inbox, emails user a source list, processes reply
+    ↓ (sets initial agent_config + newsletter_sources trust_weights)
+
 Gmail Inbox
     ↓
 [Source Classifier] — detects newsletters via List-Unsubscribe header + sender patterns
@@ -104,8 +109,9 @@ See `schema.sql` (to be created in Phase 1). Key tables:
 - `digests` — each sent digest with type, timestamps, acknowledgment status
 - `stories` — individual synthesized stories with embeddings, treatment level, sources
 - `story_clusters` — canonical cluster records for cross-day deduplication
-- `feedback_events` — raw replies, supervisor interpretation, applied changes
-- `agent_config` — runtime config (topic weights, prompts, word budgets) with rollback
+- `feedback_events` — raw replies to digests, supervisor interpretation, applied changes (digest_id NOT NULL — onboarding replies do not go here)
+- `onboarding_events` — setup email thread_id, raw user reply, sources confirmed/deprioritized, applied status (Phase 6)
+- `agent_config` — runtime config (topic weights, prompts, word budgets) with rollback; includes `onboarding_complete` key
 - `newsletter_sources` — discovered sources, classification, trust weight, unsubscribe info
 
 ---
@@ -153,6 +159,15 @@ See `schema.sql` (to be created in Phase 1). Key tables:
 - Pipeline failure retry logic + alert email
 - Error handling and resilience hardening
 
+### Phase 6 — Onboarding ◯
+- `pipeline/onboarding.py` — first-run flow: scan inbox via source_classifier, build discovered source list, send setup email asking user to identify important sources
+- `onboarding_events` table migration — stores setup email thread_id, raw reply, parsed preferences, applied status
+- `agent_config` key: `onboarding_complete` (boolean) — gates the `/jobs/onboard` endpoint; daily-brief endpoint checks this before running
+- Reply polling for setup email thread — detected via `gmail_service.get_replies()` on stored thread_id
+- Onboarding reply processor — LLM parses free-text reply to extract source priorities; writes `topic_weights` + `newsletter_sources.trust_weight` to DB; sets `onboarding_complete: true`
+- `/jobs/onboard` FastAPI endpoint — one-time trigger; no-ops if `onboarding_complete` is true
+- `ONBOARDING_COMPLETE` guard in `_run_daily_brief()` — if false, send a reminder and skip the run
+
 ---
 
 ## Project-Specific Conventions
@@ -188,6 +203,7 @@ news-briefing-agent/
 ├── source_classifier.py    # Newsletter detection + routing
 ├── pipeline/
 │   ├── daily_brief.py      # Main daily pipeline orchestrator
+│   ├── onboarding.py       # First-run onboarding flow (Phase 6)
 │   ├── deep_read.py        # Deep read pipeline
 │   ├── weekend_catchup.py  # Weekend catch-up pipeline
 │   ├── extractor.py        # LLM story extraction (LCEL)
@@ -249,6 +265,28 @@ pytest tests/ -v
 ```
 
 ---
+
+## Deploying to Railway
+
+`railway.toml` configures the web service (build + start command + health check).
+Cron jobs are separate Railway services. Create each in the Railway dashboard as a
+**Cron** service type pointing to the same repo, with the start commands and schedules below.
+
+Set `WEB_SERVICE_URL` as a shared env var (the public URL of the web service).
+
+| Service name | Cron schedule | Start command |
+|---|---|---|
+| `daily-brief` | `*/15 6-10 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/daily-brief` |
+| `poll-replies` | `*/15 * * * *` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/poll-replies` |
+| `deep-read` | `0 9 * * 1-5` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/deep-read` |
+| `weekend-catchup` | `0 8 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/weekend-catchup` |
+| `supervisor-weekly` | `0 7 * * 0` | `curl -sS -X POST $WEB_SERVICE_URL/jobs/supervisor-weekly` |
+
+Notes:
+- `daily-brief` polls every 15 min Mon–Fri from 6–10am. The pipeline checks anchor sources before running and exits early if they haven't arrived.
+- `supervisor-weekly` runs at 7am Sunday — before `weekend-catchup` at 8am — so the review email reflects a complete week.
+- All env vars (see Environment Variables section) must be set on the web service. Cron services only need `WEB_SERVICE_URL`.
+
 ---
 
 # Part 2 — Engineering Standards

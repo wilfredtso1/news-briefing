@@ -4,6 +4,23 @@ Foundational decisions made before development began are documented in `CLAUDE.m
 
 ---
 
+## 2026-03-26: On-demand pipeline trigger via email command
+
+**Status**: Accepted
+
+**Context**: Pipelines run on Railway cron. If a scheduled run fails (e.g. anchors arrive late, pipeline crashes), the user has no way to get a brief without hitting the FastAPI endpoint manually. The user also wants the ability to request a brief at any time outside the schedule.
+
+**Options considered**:
+1. **Dedicated email address / webhook** — Give the agent its own Gmail address; user emails it to trigger runs. Pros: clean separation. Cons: requires a second OAuth credential, extra Gmail account to manage, unnecessary complexity for a single-user tool.
+2. **Extend existing supervisor graph with a new "command" reply type** — User replies to any existing digest saying "send brief". The 15-minute poll cycle already runs; adding a new reply type to the graph reuses all existing infrastructure. Self-addressed email (from/to `gmail_send_as`) as a failsafe when no digest exists to reply to.
+3. **New FastAPI endpoint with auth token** — `POST /jobs/trigger?token=xxx`. Pros: instant. Cons: requires user to remember a URL and token; no email-native UX.
+
+**Decision**: Option 2. New `"command"` reply type in the immediate supervisor graph with `extract_command_node` (Haiku classifies `daily_brief` vs `deep_read`) and `execute_command_node` (runs the pipeline synchronously in the background task). Failsafe: `_check_inbox_commands` in `_run_poll_replies` scans for self-addressed unread emails. All runs use `force=True` to bypass anchor checks and queue thresholds — user explicitly asked, deliver what's available.
+
+**Consequences**: On-demand runs happen within one 15-minute polling cycle. They share the same `run_id` logging and alert infrastructure as scheduled runs. The `force` flag on `run_deep_read` delivers with even 1 article if that's all that's available — deliberate UX choice. Command replies to a digest do NOT mark it acknowledged (it's a request, not a reading confirmation).
+
+---
+
 ## 2026-03-26: Concurrent agent build for Phases 3–5 using git worktrees
 
 **Status**: Accepted
@@ -55,6 +72,23 @@ Foundational decisions made before development began are documented in `CLAUDE.m
 **Decision**: Railway cron + FastAPI job endpoints. The schedules are simple (hourly, daily, weekly) and don't need APScheduler's flexibility. Railway's cron dashboard gives free observability. The FastAPI endpoints also enable manual triggering from phone via Shortcuts app.
 
 **Consequences**: No scheduling in local dev — jobs must be triggered manually or via `curl`. This is acceptable for development; the full schedule only matters in production.
+
+---
+
+## 2026-03-26: Weekly supervisor sends informational email; approval flow deferred
+
+**Status**: Accepted
+
+**Context**: The spec calls for the weekly supervisor to send proposed changes in a review email and "apply approved changes" when the user replies. Implementing the approval flow requires polling replies to the weekly review email and distinguishing approval replies from other replies — a non-trivial extension of the reply polling logic.
+
+**Options considered**:
+1. **Full approval flow** — Store weekly review as a `weekly_review` digest type, poll for replies, interpret approvals via the immediate supervisor. Pros: complete spec implementation. Cons: significant scope for a first pass; the immediate supervisor already handles reply feedback for day-to-day changes.
+2. **Informational only, approvals via normal reply flow** — Weekly review email is purely informational. Any approved changes the user wants to make, they reply to a digest email (same flow as always). Cons: proposed changes from the weekly review aren't directly actionable.
+3. **Apply all proposed changes automatically (no approval step)** — Cons: violates the spec's separation of low-risk (auto-apply) vs. high-risk (human approval).
+
+**Decision**: Apply low-risk changes automatically (consistent with immediate supervisor), send high-risk proposals in the review email with instructions to reply. Approval flow deferred to future work. In practice, the user can reply to any recent digest to approve a structural change — the immediate supervisor will handle it.
+
+**Consequences**: High-risk changes proposed in the weekly review require the user to remember to reply to a digest separately. This is acceptable for a personal tool. Track in TODO.md.
 
 ---
 
@@ -146,6 +180,23 @@ changing the architecture.
 
 ---
 
+## 2026-03-26: Onboarding agent is a separate flow, not routed through the supervisor
+
+**Status**: Accepted
+
+**Context**: User onboarding requires scanning the inbox, emailing the user a source list, and processing their reply to set initial preferences. The existing supervisor (immediate mode) only processes replies to known digest thread IDs and writes to `feedback_events`, which has a NOT NULL `digest_id` foreign key. There is no digest at onboarding time.
+
+**Options considered**:
+1. **Route onboarding through the supervisor** — Make `feedback_events.digest_id` nullable, add an `event_source` column (`onboarding` vs `digest_reply`), and teach the supervisor to handle both. Pros: one reply-processing path. Cons: the supervisor's job is to improve digest quality from feedback; onboarding is a one-time setup task with different inputs, outputs, and risk profile. Mixing them complicates both.
+2. **Separate `onboarding_events` table + `pipeline/onboarding.py`** — Onboarding has its own table, its own LLM processor, its own FastAPI endpoint (`/jobs/onboard`). The supervisor is untouched. Pros: clean separation of concerns; onboarding logic can evolve independently; no schema surgery on `feedback_events`. Cons: slightly more code surface.
+3. **Make `feedback_events.digest_id` nullable** — Simplest schema change. Cons: loses the NOT NULL guarantee that every feedback event is tied to a real digest; makes the supervisor harder to reason about.
+
+**Decision**: Option 2 — separate `onboarding_events` table and `pipeline/onboarding.py`. The supervisor and onboarding agent are distinct in purpose, trigger, and output. Keeping them separate maintains clear invariants on both sides.
+
+**Consequences**: `feedback_events.digest_id` stays NOT NULL. Onboarding reply processing is in `pipeline/onboarding.py`. The `agent_config` table gains an `onboarding_complete` key that gates the daily brief pipeline. A Phase 6 schema migration adds `onboarding_events`.
+
+---
+
 ## 2026-03-26: Deep Read formats each article individually, no synthesis LLM call
 
 **Status**: Accepted
@@ -160,3 +211,21 @@ changing the architecture.
 **Decision**: Option 2 — custom `_format_deep_read()` that presents each article individually with its title, source, link, and full body. We import `extractor.py` for content extraction but bypass the synthesizer entirely. The format is sequential (article 1, article 2, ...) not topic-grouped.
 
 **Consequences**: Deep read digest is longer and doesn't use formatter.py's topic grouping. The word budget is effectively unbounded (capped only by 3–5 articles × article length). The formatter.py import is still used for the subject line via `format_digest` in weekend_catchup — not deep_read.
+
+
+---
+
+## 2026-03-26: Cluster-level read tracking for cross-digest story deduplication
+
+**Status**: Accepted
+
+**Context**: Stories can appear in multiple digests — e.g., a daily brief and an on-demand brief triggered via email command. If the user acknowledges only one, the other remains "unacknowledged" and the story could re-appear in the weekend catch-up. Acknowledgment at the digest level alone doesn't prevent this.
+
+**Options considered**:
+1. **Digest-level acknowledgment only (current)** — `get_unacknowledged_stories` queries stories from unacknowledged digests. Simple, but a story in two digests appears in catch-up if only one digest is acknowledged.
+2. **Story-level `read_at` on stories table** — Mark each story row individually. Requires updating every story in every digest that contains a given cluster, which is O(digests × stories). Also doesn't propagate automatically to future digests that include the same cluster.
+3. **Cluster-level `read_at` on story_clusters** — One UPDATE per cluster marks the canonical story identity as read. Any future query that checks `sc.read_at IS NULL` automatically excludes it, regardless of how many digests the story appeared in. One migration, one new db.py function.
+
+**Decision**: Option 3 — `read_at` on `story_clusters`. `mark_digest_acknowledged` calls `mark_clusters_read(digest_id)` which stamps all clusters referenced by that digest. `get_unacknowledged_stories` LEFT JOINs `story_clusters` and filters `sc.read_at IS NULL OR cluster_id IS NULL`.
+
+**Consequences**: Stories with no `cluster_id` (NULL) are always included in catch-up — this is correct behaviour for older stories that predate the cluster assignment logic. The index `idx_story_clusters_unread` (partial, WHERE read_at IS NULL) keeps the weekend catch-up query fast even as the cluster table grows.

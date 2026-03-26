@@ -2,7 +2,7 @@
 Tests for pipeline/deep_read.py
 
 Unit tests: all DB, gmail_service, and extractor calls are mocked.
-E2E tests: marked @pytest.mark.e2e — skipped if SUPABASE_URL not set.
+E2E tests: marked @pytest.mark.e2e — skipped if DATABASE_URL not set.
 
 Coverage target: >90% of orchestration logic.
 """
@@ -498,17 +498,17 @@ class TestRunDeepRead:
 
 
 # ---------------------------------------------------------------------------
-# E2E tests (skipped unless SUPABASE_URL is set)
+# E2E tests (skipped unless DATABASE_URL is set)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.e2e
 class TestDeepReadE2E:
-    """Integration tests against real DB. Skipped if SUPABASE_URL not set."""
+    """Integration tests against real DB. Skipped if DATABASE_URL not set."""
 
     @pytest.fixture(autouse=True)
     def require_db(self):
-        if not os.getenv("SUPABASE_URL"):
-            pytest.skip("SUPABASE_URL not set — skipping E2E tests")
+        if not os.getenv("DATABASE_URL"):
+            pytest.skip("DATABASE_URL not set — skipping E2E tests")
 
     def test_get_active_sources_returns_list(self):
         """Verify the DB query runs without error."""

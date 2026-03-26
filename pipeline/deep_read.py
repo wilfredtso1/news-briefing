@@ -43,7 +43,7 @@ _DEFAULT_THRESHOLD = 5
 
 
 @traced("deep_read")
-def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
+def run_deep_read(run_id: str, dry_run: bool = False, force: bool = False) -> dict:
     """
     Execute the deep read pipeline.
 
@@ -54,11 +54,14 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
     Args:
         run_id: Unique identifier for this pipeline run (propagated to all logs).
         dry_run: If True, skips sending email and archiving.
+        force: If True, bypasses the queue threshold and minimum article count.
+               Used for on-demand triggers where the user explicitly asked to run.
+               Delivers whatever articles are available, even fewer than _MIN_ARTICLES.
 
     Returns a dict with articles_included, word_count, digest_id.
     Raises on unrecoverable errors (DB failure, email delivery failure).
     """
-    log.info("deep_read_start", run_id=run_id, dry_run=dry_run)
+    log.info("deep_read_start", run_id=run_id, dry_run=dry_run, force=force)
 
     gmail = GmailService()
 
@@ -66,22 +69,27 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
     long_form_messages = _fetch_long_form_messages(gmail)
     log.info("deep_read_fetched", run_id=run_id, message_count=len(long_form_messages))
 
-    # --- Step 2: Check threshold ---
-    threshold = _load_threshold()
-    if len(long_form_messages) < threshold:
-        log.info(
-            "deep_read_below_threshold",
-            run_id=run_id,
-            available=len(long_form_messages),
-            threshold=threshold,
-        )
-        return {
-            "run_id": run_id,
-            "status": "below_threshold",
-            "available": len(long_form_messages),
-            "threshold": threshold,
-            "articles_included": 0,
-        }
+    # --- Step 2: Check threshold (skipped when force=True) ---
+    if not force:
+        threshold = _load_threshold()
+        if len(long_form_messages) < threshold:
+            log.info(
+                "deep_read_below_threshold",
+                run_id=run_id,
+                available=len(long_form_messages),
+                threshold=threshold,
+            )
+            return {
+                "run_id": run_id,
+                "status": "below_threshold",
+                "available": len(long_form_messages),
+                "threshold": threshold,
+                "articles_included": 0,
+            }
+
+    if not long_form_messages:
+        log.info("deep_read_no_articles", run_id=run_id)
+        return {"run_id": run_id, "status": "no_articles", "articles_included": 0}
 
     # --- Step 3: Select articles (cap at _MAX_ARTICLES) ---
     selected_messages = long_form_messages[:_MAX_ARTICLES]
@@ -90,7 +98,8 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
     articles = _extract_articles(selected_messages)
     log.info("deep_read_extracted", run_id=run_id, article_count=len(articles))
 
-    if len(articles) < _MIN_ARTICLES:
+    # --- Minimum article check (skipped when force=True) ---
+    if not force and len(articles) < _MIN_ARTICLES:
         log.info(
             "deep_read_insufficient_articles",
             run_id=run_id,
@@ -102,6 +111,10 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
             "status": "insufficient_articles",
             "articles_included": len(articles),
         }
+
+    if not articles:
+        log.info("deep_read_no_articles_extracted", run_id=run_id)
+        return {"run_id": run_id, "status": "no_articles_extracted", "articles_included": 0}
 
     # --- Step 5: Format digest body ---
     # Each article is presented individually at full depth.

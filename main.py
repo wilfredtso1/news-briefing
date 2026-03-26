@@ -114,6 +114,20 @@ async def job_weekend_catchup(background_tasks: BackgroundTasks):
     return {"job": "weekend_catchup", "run_id": run_id, "status": "queued"}
 
 
+@app.post("/jobs/onboard")
+async def job_onboard(background_tasks: BackgroundTasks):
+    """
+    Trigger the onboarding flow.
+    Scans inbox for newsletters and sends a setup email asking the user to
+    identify their most important sources. Idempotent — no-ops if onboarding
+    is already complete or a setup email is already pending a reply.
+    """
+    run_id = str(uuid.uuid4())
+    log.info("job_triggered", job="onboard", run_id=run_id)
+    background_tasks.add_task(_run_onboard, run_id)
+    return {"job": "onboard", "run_id": run_id, "status": "queued"}
+
+
 @app.post("/jobs/supervisor-weekly")
 async def job_supervisor_weekly(background_tasks: BackgroundTasks):
     """
@@ -134,12 +148,19 @@ async def job_supervisor_weekly(background_tasks: BackgroundTasks):
 def _run_daily_brief(run_id: str) -> None:
     """
     Run the daily brief pipeline. Checks anchor sources before running.
+    Skips if onboarding has not been completed — the user's preferences
+    are needed before the pipeline runs for the first time.
     """
     from gmail_service import GmailService
     from pipeline import daily_brief
+    from tools.db import get_config
 
     log.info("daily_brief_start", run_id=run_id)
     try:
+        if not get_config("onboarding_complete"):
+            log.info("daily_brief_skipped_onboarding_incomplete", run_id=run_id)
+            return
+
         gmail = GmailService()
         anchors_ready = gmail.check_anchor_sources_present(settings.anchor_sources)
         if not anchors_ready:
@@ -239,6 +260,157 @@ def _run_poll_replies(run_id: str) -> None:
         replies_processed=processed_replies,
     )
 
+    # Check for a reply to the onboarding setup email (runs before full pipeline access)
+    _check_onboarding_reply(run_id, gmail)
+
+    # Failsafe: detect self-addressed command emails the user sent to themselves
+    _check_inbox_commands(run_id, gmail)
+
+
+def _check_onboarding_reply(run_id: str, gmail) -> None:
+    """
+    Poll for a user reply to the onboarding setup email.
+
+    Looks up the most recent pending onboarding event (applied=False with a
+    thread_id). If a reply exists, passes it to process_onboarding_reply which
+    applies preferences and marks onboarding complete.
+
+    Non-fatal: failures are logged and skipped. The next poll cycle will retry.
+    """
+    from pipeline.onboarding import process_onboarding_reply
+    from tools.db import get_pending_onboarding_event
+
+    pending = get_pending_onboarding_event()
+    if not pending:
+        return
+
+    thread_id = pending.get("thread_id")
+    sent_message_id = pending.get("sent_message_id")
+    if not thread_id or not sent_message_id:
+        log.debug("onboarding_reply_check_no_thread", run_id=run_id, event_id=str(pending["id"]))
+        return
+
+    try:
+        replies = gmail.get_thread_replies(thread_id=thread_id, after_message_id=sent_message_id)
+    except Exception as e:
+        log.warning("onboarding_reply_fetch_failed", run_id=run_id, error=str(e))
+        return
+
+    if not replies:
+        return
+
+    # Process only the first reply — onboarding is a one-shot flow
+    reply = replies[0]
+    try:
+        result = process_onboarding_reply(
+            event_id=str(pending["id"]),
+            raw_reply=reply.body_text,
+            run_id=run_id,
+        )
+        log.info(
+            "onboarding_reply_processed",
+            run_id=run_id,
+            applied_count=len(result.get("applied_changes", [])),
+            notes=result.get("notes", ""),
+        )
+    except Exception as e:
+        log.error("onboarding_reply_process_failed", run_id=run_id, error=str(e))
+        send_alert("onboarding_reply", e, run_id)
+
+
+def _check_inbox_commands(run_id: str, gmail) -> None:
+    """
+    Scan inbox for self-addressed command emails and trigger the requested pipeline.
+
+    Failsafe path for on-demand triggers when no digest exists to reply to
+    (e.g. the pipeline has never run, or the user wants to trigger from scratch).
+    The user sends an email from/to their own address (settings.gmail_send_as)
+    with a subject or body like "send brief" or "deep read".
+
+    After processing any command (successfully or not), the email is archived
+    to prevent the next polling cycle from re-triggering the pipeline.
+    Non-fatal: individual failures are logged and skipped.
+    """
+    from supervisor.immediate import classify_command
+
+    query = f"from:{settings.gmail_send_as} to:{settings.gmail_send_as} is:unread"
+    try:
+        command_messages = gmail.list_messages_with_query(query, max_results=10)
+    except Exception as e:
+        log.warning("inbox_command_scan_failed", run_id=run_id, error=str(e))
+        return
+
+    if not command_messages:
+        return
+
+    log.info("inbox_commands_found", run_id=run_id, count=len(command_messages))
+
+    for msg in command_messages:
+        # Use subject + body so short subjects like "send brief" are classified correctly
+        text = f"{msg.subject}\n{msg.body_text}".strip()
+        try:
+            command_target = classify_command(text)
+        except Exception as e:
+            log.warning(
+                "inbox_command_classify_failed",
+                run_id=run_id,
+                message_id=msg.message_id,
+                error=str(e),
+            )
+            gmail.archive_messages([msg.message_id])
+            continue
+
+        cmd_run_id = str(uuid.uuid4())
+        log.info(
+            "inbox_command_executing",
+            run_id=run_id,
+            command_target=command_target,
+            cmd_run_id=cmd_run_id,
+        )
+
+        try:
+            if command_target == "deep_read":
+                from pipeline.deep_read import run_deep_read
+                run_deep_read(run_id=cmd_run_id, force=True)
+            else:
+                from pipeline.daily_brief import run as run_daily_brief
+                run_daily_brief(run_id=cmd_run_id)
+            log.info(
+                "inbox_command_complete",
+                run_id=run_id,
+                command_target=command_target,
+                cmd_run_id=cmd_run_id,
+            )
+        except Exception as e:
+            log.error(
+                "inbox_command_pipeline_failed",
+                run_id=run_id,
+                command_target=command_target,
+                cmd_run_id=cmd_run_id,
+                error=str(e),
+            )
+            send_alert(f"inbox_command_{command_target}", e, cmd_run_id)
+        finally:
+            # Always archive — prevents re-triggering even if the pipeline failed
+            gmail.archive_messages([msg.message_id])
+
+
+def _run_onboard(run_id: str) -> None:
+    """
+    Run the onboarding flow. Idempotent — no-ops if already complete.
+    Scans inbox for newsletters and sends a setup email to the user.
+    """
+    from pipeline.onboarding import run_onboarding
+
+    log.info("onboard_start", run_id=run_id)
+    try:
+        result = run_onboarding(run_id=run_id)
+        log.info("onboard_finished", run_id=run_id, status=result.get("status"))
+    except Exception as e:
+        log.error("onboard_failed", run_id=run_id, error=str(e))
+        send_alert("onboarding", e, run_id)
+        raise
+
 
 def _run_deep_read(run_id: str) -> None:
     """Run the deep read pipeline if the long-form queue meets the configured threshold."""
@@ -269,6 +441,19 @@ def _run_weekend_catchup(run_id: str) -> None:
 
 
 def _run_supervisor_weekly(run_id: str) -> None:
-    """Phase 1 stub. Weekly supervisor sweep wired in Phase 5."""
+    """Run the weekly supervisor pattern sweep and send a review email."""
+    from supervisor.weekly import run_weekly_supervisor
+
     log.info("supervisor_weekly_start", run_id=run_id)
-    # TODO(phase5): pull last 7 days of feedback/engagement, reason over patterns
+    try:
+        result = run_weekly_supervisor(run_id=run_id)
+        log.info(
+            "supervisor_weekly_finished",
+            run_id=run_id,
+            action_taken=result.action_taken,
+            email_sent=result.email_sent,
+        )
+    except Exception as e:
+        log.error("supervisor_weekly_failed", run_id=run_id, error=str(e))
+        send_alert("supervisor_weekly", e, run_id)
+        raise
