@@ -183,7 +183,7 @@ class TestRunWeekendCatchup:
         mock_digest.body = "digest body text"
 
         mock_gmail = MagicMock()
-        mock_gmail.send_message.return_value = "sent-msg-id"
+        mock_gmail.send_message.return_value = ("sent-msg-id", "sent-thread-id")
 
         with (
             patch("pipeline.weekend_catchup.get_unacknowledged_stories", return_value=rows),
@@ -213,7 +213,7 @@ class TestRunWeekendCatchup:
 
         mock_rank = MagicMock(side_effect=lambda s: s)
         mock_gmail = MagicMock()
-        mock_gmail.send_message.return_value = "msg-id"
+        mock_gmail.send_message.return_value = ("msg-id", "thread-id")
 
         with (
             patch("pipeline.weekend_catchup.get_unacknowledged_stories", return_value=rows),
@@ -239,7 +239,7 @@ class TestRunWeekendCatchup:
         mock_digest.body = "body"
 
         mock_gmail = MagicMock()
-        mock_gmail.send_message.return_value = "msg-id"
+        mock_gmail.send_message.return_value = ("msg-id", "thread-id")
 
         with (
             patch("pipeline.weekend_catchup.get_unacknowledged_stories", return_value=rows),
@@ -274,7 +274,7 @@ class TestRunWeekendCatchup:
             return stories
 
         mock_gmail = MagicMock()
-        mock_gmail.send_message.return_value = "msg-id"
+        mock_gmail.send_message.return_value = ("msg-id", "thread-id")
 
         with (
             patch("pipeline.weekend_catchup.get_unacknowledged_stories", return_value=rows),
@@ -311,7 +311,7 @@ class TestRunWeekendCatchup:
             return stories
 
         mock_gmail = MagicMock()
-        mock_gmail.send_message.return_value = "msg-id"
+        mock_gmail.send_message.return_value = ("msg-id", "thread-id")
 
         with (
             patch("pipeline.weekend_catchup.get_unacknowledged_stories", return_value=rows),

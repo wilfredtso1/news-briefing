@@ -337,7 +337,7 @@ class TestRunDeepRead:
         mock_gmail = MagicMock()
         mock_gmail.list_inbox_messages.return_value = [m.message_id for m in messages]
         mock_gmail.get_messages.return_value = messages
-        mock_gmail.send_message.return_value = "sent-msg-id"
+        mock_gmail.send_message.return_value = ("sent-msg-id", "sent-thread-id")
 
         with (
             patch("pipeline.deep_read.GmailService", return_value=mock_gmail),
@@ -366,7 +366,7 @@ class TestRunDeepRead:
         mock_gmail = MagicMock()
         mock_gmail.list_inbox_messages.return_value = [m.message_id for m in messages]
         mock_gmail.get_messages.return_value = messages
-        mock_gmail.send_message.return_value = "sent-msg-id"
+        mock_gmail.send_message.return_value = ("sent-msg-id", "sent-thread-id")
 
         extract_call_count = []
 
@@ -430,7 +430,7 @@ class TestRunDeepRead:
         mock_gmail = MagicMock()
         mock_gmail.list_inbox_messages.return_value = [m.message_id for m in messages]
         mock_gmail.get_messages.return_value = messages
-        mock_gmail.send_message.return_value = "sent-msg-id"
+        mock_gmail.send_message.return_value = ("sent-msg-id", "sent-thread-id")
 
         with (
             patch("pipeline.deep_read.GmailService", return_value=mock_gmail),
@@ -478,7 +478,7 @@ class TestRunDeepRead:
         mock_gmail = MagicMock()
         mock_gmail.list_inbox_messages.return_value = [m.message_id for m in messages]
         mock_gmail.get_messages.return_value = messages
-        mock_gmail.send_message.return_value = "sent-msg-id"
+        mock_gmail.send_message.return_value = ("sent-msg-id", "sent-thread-id")
 
         with (
             patch("pipeline.deep_read.GmailService", return_value=mock_gmail),
