@@ -158,15 +158,29 @@ def _run_poll_replies(run_id: str) -> None:
 
 
 def _run_deep_read(run_id: str) -> None:
-    """Phase 1 stub. Deep read pipeline wired in Phase 4."""
+    """Run the deep read pipeline if the long-form queue meets the configured threshold."""
+    from pipeline.deep_read import run_deep_read
+
     log.info("deep_read_start", run_id=run_id)
-    # TODO(phase4): check long-form queue size, trigger pipeline if threshold met
+    try:
+        result = run_deep_read(run_id=run_id)
+        log.info("deep_read_finished", run_id=run_id, status=result.get("status"))
+    except Exception as e:
+        log.error("deep_read_failed", run_id=run_id, error=str(e))
+        raise
 
 
 def _run_weekend_catchup(run_id: str) -> None:
-    """Phase 1 stub. Weekend catch-up pipeline wired in Phase 4."""
+    """Run the weekend catch-up pipeline drawing from unacknowledged Mon–Fri stories."""
+    from pipeline.weekend_catchup import run_weekend_catchup
+
     log.info("weekend_catchup_start", run_id=run_id)
-    # TODO(phase4): query unacknowledged stories, build and send catch-up digest
+    try:
+        result = run_weekend_catchup(run_id=run_id)
+        log.info("weekend_catchup_finished", run_id=run_id, status=result.get("status"))
+    except Exception as e:
+        log.error("weekend_catchup_failed", run_id=run_id, error=str(e))
+        raise
 
 
 def _run_supervisor_weekly(run_id: str) -> None:

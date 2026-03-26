@@ -3,6 +3,14 @@
 ## [Unreleased]
 
 ### Added
+- Phase 4 weekend catch-up pipeline: queries unacknowledged Mon–Fri daily brief stories, deduplicates cross-day repeats via cluster_id (pgvector-backed dedup already in DB), reranks by importance (source count + topic weights), and formats a ~4500-word catch-up digest for Sunday morning delivery
+- Phase 4 deep read pipeline: fetches unread long-form emails from known sources, checks queue threshold (default: 5, configurable via agent_config), extracts article content, and formats a depth-first digest presenting each piece individually with its full body and original link — no synthesis, no topic grouping
+- `pipeline/weekend_catchup.py` — orchestrator with dry_run support; entry point `run_weekend_catchup() -> dict`
+- `pipeline/deep_read.py` — orchestrator with dry_run support; entry point `run_deep_read() -> dict`; includes `_extract_first_url()` to surface web-version links from email HTML
+- `main.py` — `_run_weekend_catchup()` and `_run_deep_read()` stubs replaced with full pipeline invocations
+- `tests/test_weekend_catchup.py`, `tests/test_deep_read.py` — unit tests with mocked DB and gmail_service; @pytest.mark.e2e tests gated behind SUPABASE_URL
+
+### Added (Phase 2 — previously)
 - Phase 2 core pipeline: full daily brief pipeline from email fetch → extraction → embedding → disambiguation → synthesis → enrichment → ranking → formatting → delivery
 - `pipeline/extractor.py` — LCEL chain (claude-haiku-4-5) extracts structured stories from newsletter HTML/text; graceful failure per-newsletter with pipeline continuing
 - `pipeline/embedder.py` — Voyage AI voyage-3 embeddings with greedy cosine-similarity clustering; cross-day dedup against recent digest embeddings; ambiguous pairs flagged for LangGraph resolution

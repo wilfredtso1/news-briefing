@@ -14,9 +14,10 @@
 
 ## Low Priority — Phase 4
 
-- [ ] `pipeline/weekend_catchup.py` — Draw from unacknowledged stories, rerank
-- [ ] `pipeline/deep_read.py` — Long-form queue pipeline
-- [ ] Wire Phase 4 into `main.py`
+- [x] `pipeline/weekend_catchup.py` — Draw from unacknowledged stories, rerank — Completed 2026-03-26
+- [x] `pipeline/deep_read.py` — Long-form queue pipeline — Completed 2026-03-26
+- [x] Wire Phase 4 into `main.py` — `_run_weekend_catchup` and `_run_deep_read` filled — 2026-03-26
+- [x] `tests/test_weekend_catchup.py`, `tests/test_deep_read.py` — unit + E2E tests — 2026-03-26
 
 ## Low Priority — Phase 5
 
