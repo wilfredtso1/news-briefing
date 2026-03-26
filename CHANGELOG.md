@@ -1,9 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — Phase 3/4/5 (in progress)
+
+### In Progress
+- `supervisor/immediate.py` — LangGraph immediate supervisor: reply classification, config updates, unsubscribe executor
+- `pipeline/weekend_catchup.py` — Sunday catch-up pipeline drawing from unacknowledged stories
+- `pipeline/deep_read.py` — Long-form queue pipeline with threshold trigger
+- `tools/tracing.py` — LangSmith tracing decorator for all LLM calls
+- `tools/retry.py` — Retry wrapper with retryable vs. fatal error discrimination
+- `tools/alerts.py` — Alert email on pipeline failure after retries exhausted
+
+---
+
+## [Phase 2 — Core Pipeline] — 2026-03-26
 
 ### Added
-- Phase 2 core pipeline: full daily brief pipeline from email fetch → extraction → embedding → disambiguation → synthesis → enrichment → ranking → formatting → delivery
+- Phase 2 core pipeline: full daily brief pipeline from email fetch → extraction → embedding → disambiguation → synthesis → enrichment → ranking → formatting → delivery. E2E tested against real Gmail inbox.
 - `pipeline/extractor.py` — LCEL chain (claude-haiku-4-5) extracts structured stories from newsletter HTML/text; graceful failure per-newsletter with pipeline continuing
 - `pipeline/embedder.py` — Voyage AI voyage-3 embeddings with greedy cosine-similarity clustering; cross-day dedup against recent digest embeddings; ambiguous pairs flagged for LangGraph resolution
 - `pipeline/disambiguator.py` — LangGraph StateGraph with auto-merge/split thresholds and claude-opus-4-6 for borderline cases
@@ -14,6 +26,8 @@
 - `pipeline/daily_brief.py` — orchestrator wiring all pipeline stages; persists digest + stories to DB after delivery; anchor check still in main.py
 - `main.py` — `_run_daily_brief` now calls full pipeline instead of stub
 - 84 new tests across extractor, embedder, synthesizer, ranker, formatter — 124 total passing
+
+---
 
 ## [Phase 1 — Foundation]
 

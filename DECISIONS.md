@@ -4,6 +4,27 @@ Foundational decisions made before development began are documented in `CLAUDE.m
 
 ---
 
+## 2026-03-26: Concurrent agent build for Phases 3–5 using git worktrees
+
+**Status**: Accepted
+
+**Context**: Phase 2 completed. Phases 3 (supervisor), 4 (weekend catch-up + deep read), and 5 (tracing/retry/alerts) needed to be built. Default approach would be sequential: finish one phase, start the next.
+
+**Options considered**:
+1. **Sequential build** — One phase at a time. Simple, no coordination overhead. Cons: leaves agents idle and doesn't exploit the independence of these phases.
+2. **Concurrent build, shared working directory** — Multiple agents working in the same checkout simultaneously. Cons: file conflicts, impossible to isolate changes, merge chaos.
+3. **Concurrent build, git worktrees** — Each agent gets its own branch and working directory via `git worktree add`. Agents work in isolation, push branches, PRs merged in a defined order. Cons: requires a merge/integration sprint at the end.
+
+**Decision**: Concurrent build with git worktrees. Analysis showed Phase 3 has almost no dependency on Phase 2 logic (only needs Phase 1 schema and gmail_service). Phase 4 imports complete Phase 2 modules but doesn't need them running to write code. Phase 5 utilities are entirely independent. Running all three concurrently with defined file ownership in `AGENTS.md` eliminates idle time.
+
+**File ownership**: Agent 1 owns `supervisor/`, Agent 2 owns `pipeline/weekend_catchup.py` + `pipeline/deep_read.py`, Agent 3 owns `tools/tracing.py` + `tools/retry.py` + `tools/alerts.py`. Conflicts go to the human — agents do not merge autonomously.
+
+**Integration order**: phase-5-infra merges first (tools must exist), then phase-3-supervisor, then phase-4-pipelines.
+
+**Consequences**: Requires a short integration sprint after all branches complete. Weekly supervisor (`supervisor/weekly.py`) remains sequential — it needs real feedback_events in the DB before it can be built meaningfully.
+
+---
+
 ## 2026-03-26: Use HNSW index for story embeddings instead of IVFFlat
 
 **Status**: Accepted

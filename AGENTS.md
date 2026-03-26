@@ -1,14 +1,13 @@
 # Concurrent Agent Build Plan
 
 > Read CLAUDE.md fully before starting work. This file defines your scope, file ownership, and integration seams.
-> Phase 2 is being built externally on a separate branch. Do not touch Phase 2 files.
 
 ---
 
 ## Status at Plan Creation
 
 - **Phase 1**: Complete
-- **Phase 2**: In progress externally (extractor, embedder, disambiguator, synthesizer, enricher, ranker, formatter, daily_brief orchestrator — code written, integration + E2E testing in progress)
+- **Phase 2**: Complete and E2E tested (extractor, embedder, disambiguator, synthesizer, enricher, ranker, formatter, daily_brief orchestrator — all integrated and running)
 - **Phases 3–5**: Not started
 
 ---
@@ -80,7 +79,7 @@ Your graph receives `digest_id` (UUID) and `raw_reply` (string). You do not care
   - Send via `gmail_service.send()`, archive
   - Trigger: Thursday fallback if queue at threshold, or `/jobs/deep-read` endpoint
 
-- `tests/test_weekend_catchup.py` — mock DB returns, mock Phase 2 imports, mock gmail_service
+- `tests/test_weekend_catchup.py` — unit tests with mocked DB and mocked gmail_service; plus `@pytest.mark.e2e` integration tests against real DB (require `SUPABASE_URL` env var)
 - `tests/test_deep_read.py` — same approach
 
 ### Files you own
@@ -109,13 +108,15 @@ tools/
 Import Phase 2 modules directly — do not copy their logic.
 
 ### Integration seam
-Both pipelines import Phase 2 modules (`ranker`, `formatter`, `synthesizer`, `extractor`) by reference. In unit tests, mock these imports. E2E testing waits until Phase 2 is integrated and stories exist in the DB.
+Both pipelines import Phase 2 modules (`ranker`, `formatter`, `synthesizer`, `extractor`) by reference. Phase 2 is complete — import freely, do not copy logic.
 
 ### Definition of done
-- Both pipeline files importable with Phase 2 modules mocked
+- Both pipeline files importable and fully implemented
 - Unit tests pass with >90% coverage on orchestration logic
-- `weekend_catchup.py` correctly builds the unacknowledged-story query (even if E2E test is skipped)
+- `@pytest.mark.e2e` tests written and runnable manually against live DB
+- `weekend_catchup.py` correctly builds the unacknowledged-story query
 - `deep_read.py` correctly applies queue threshold from `agent_config`
+- Wire `_run_weekend_catchup` and `_run_deep_read` stubs in `main.py`
 
 ---
 
@@ -180,13 +181,13 @@ All three utilities are designed for zero-friction adoption: `@traced(name)` wra
 
 ---
 
-## Integration Sprint (after Phase 2 merges to main)
+## Integration Sprint (after all three branches complete)
 
-All three branches rebase onto main, then:
+Phase 2 is already on main. Merge all three branches in order: phase-5-infra → phase-3-supervisor → phase-4-pipelines.
 
-1. **Agent 1**: Wire supervisor to real digest IDs. Run E2E test against Gmail with a real reply.
-2. **Agent 2**: Run E2E tests for both pipelines against real DB with real story data.
-3. **Agent 3**: Thread `@traced`, `with_retry`, and `send_alert` through all pipeline steps and job endpoints in `main.py`.
+1. **Agent 3 first**: Thread `@traced`, `with_retry`, and `send_alert` through all pipeline steps and job endpoints in `main.py` — tools must exist before other agents reference them.
+2. **Agent 1**: Wire supervisor to real digest IDs. Run E2E test against Gmail with a real reply.
+3. **Agent 2**: Run `@pytest.mark.e2e` tests against live DB with real story data.
 4. **All**: Update `CHANGELOG.md` and `TODO.md`. Add `DECISIONS.md` entries for any non-obvious choices made during build.
 
 Weekly supervisor (`supervisor/weekly.py`) starts after integration sprint — it needs real feedback events in the DB.
