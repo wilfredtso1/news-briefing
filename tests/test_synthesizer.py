@@ -6,7 +6,7 @@ LLM calls are mocked — never calls real Anthropic API.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,10 +15,33 @@ from pipeline.extractor import ExtractedStory
 from pipeline.synthesizer import (
     SynthesizedStory,
     _build_sources_block,
+    _build_system,
     _merge_key_facts,
     _normalise_topic,
+    _SYNTHESIS_SYSTEM_BASE,
+    _REFORMAT_SYSTEM_BASE,
     synthesize_clusters,
 )
+
+
+# ---------------------------------------------------------------------------
+# Auto-mock get_config for all tests that call synthesize_clusters.
+# Without this, synthesize_clusters() would attempt a real DB connection.
+# Tests that need specific style_notes values override this per-test.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def mock_get_config(request):
+    """
+    Default: patch get_config to return [] (no style notes) for all synthesizer tests.
+    Tests in TestSynthesizeClustersStyleNotes override this themselves via nested patches.
+    """
+    # Skip autouse mock for tests that manage get_config themselves
+    if request.node.cls and request.node.cls.__name__ == "TestSynthesizeClustersStyleNotes":
+        yield
+        return
+    with patch("pipeline.synthesizer.get_config", return_value=[]):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +237,134 @@ class TestSynthesizeClusters:
 
         assert "brew@brew.com" in results[0].source_emails
         assert "axios@axios.com" in results[0].source_emails
+
+
+# ---------------------------------------------------------------------------
+# _build_system
+# ---------------------------------------------------------------------------
+
+class TestBuildSystem:
+    def test_empty_style_notes_returns_base_unchanged(self):
+        result = _build_system(_SYNTHESIS_SYSTEM_BASE, [])
+        assert result == _SYNTHESIS_SYSTEM_BASE
+
+    def test_empty_list_returns_base_unchanged(self):
+        result = _build_system(_REFORMAT_SYSTEM_BASE, [])
+        assert result == _REFORMAT_SYSTEM_BASE
+
+    def test_style_notes_injected_before_json_line(self):
+        notes = ["write shorter stories", "use active voice"]
+        result = _build_system(_SYNTHESIS_SYSTEM_BASE, notes)
+        assert "Additional style instructions:" in result
+        assert "- write shorter stories" in result
+        assert "- use active voice" in result
+        # JSON format line must still be present and at the end
+        assert result.strip().endswith('"topic": "one of: AI, markets, policy, health, tech, vc, other"}}')
+
+    def test_style_notes_appear_before_json_line(self):
+        notes = ["be concise"]
+        result = _build_system(_SYNTHESIS_SYSTEM_BASE, notes)
+        notes_pos = result.index("Additional style instructions:")
+        json_pos = result.index("Return JSON only:")
+        assert notes_pos < json_pos
+
+
+# ---------------------------------------------------------------------------
+# synthesize_clusters with style_notes (mocked get_config + LLM)
+# ---------------------------------------------------------------------------
+
+class TestSynthesizeClustersStyleNotes:
+    def test_style_notes_injected_into_single_source_system_prompt(self):
+        """Non-empty style_notes → _build_system called with notes for single-source path."""
+        cluster = _make_cluster([_make_story("AI Funding")])
+        notes = ["write shorter stories"]
+        build_calls: list[tuple] = []
+
+        def fake_build(base, style_notes):
+            build_calls.append((base, style_notes))
+            # Return unchanged base so the dynamic chain still gets a valid system string
+            return base
+
+        with patch("pipeline.synthesizer.get_config", return_value=notes), \
+             patch("pipeline.synthesizer._build_system", side_effect=fake_build), \
+             patch("pipeline.synthesizer._reformat_chain") as mock_static_chain:
+            mock_static_chain.invoke.return_value = {"title": "T", "body": "B", "topic": "ai"}
+            # dynamic chain will fail (no real LLM), fallback fires — that's OK
+            synthesize_clusters([cluster])
+
+        assert build_calls, "_build_system was not called at all"
+        assert build_calls[0][1] == notes, f"style_notes not passed: {build_calls[0][1]}"
+
+    def test_style_notes_injected_into_multi_source_system_prompt(self):
+        """Non-empty style_notes → _build_system called with notes for multi-source path."""
+        cluster = _make_cluster([
+            _make_story("AI Funding", newsletter="Axios AM"),
+            _make_story("AI Company Raises", newsletter="Morning Brew"),
+        ])
+        notes = ["be concise"]
+        build_calls: list[tuple] = []
+
+        def fake_build(base, style_notes):
+            build_calls.append((base, style_notes))
+            return base
+
+        with patch("pipeline.synthesizer.get_config", return_value=notes), \
+             patch("pipeline.synthesizer._build_system", side_effect=fake_build), \
+             patch("pipeline.synthesizer._chain") as mock_static_chain:
+            mock_static_chain.invoke.return_value = {"title": "T", "body": "B", "topic": "ai"}
+            synthesize_clusters([cluster])
+
+        assert build_calls, "_build_system was not called at all"
+        assert build_calls[0][1] == notes
+
+    def test_empty_style_notes_uses_static_chain_unchanged(self):
+        """Empty style_notes → module-level static chain used directly."""
+        cluster = _make_cluster([_make_story("AI Funding")])
+
+        with patch("pipeline.synthesizer.get_config", return_value=[]), \
+             patch("pipeline.synthesizer._reformat_chain") as mock_chain:
+            mock_chain.invoke.return_value = {
+                "title": "T", "body": "B", "topic": "ai"
+            }
+            results = synthesize_clusters([cluster])
+
+        mock_chain.invoke.assert_called_once()
+
+    def test_empty_style_notes_does_not_call_build_system(self):
+        """Empty style_notes → _build_system never called (hot path unchanged)."""
+        cluster = _make_cluster([_make_story("AI Funding")])
+
+        with patch("pipeline.synthesizer.get_config", return_value=[]), \
+             patch("pipeline.synthesizer._build_system") as mock_build, \
+             patch("pipeline.synthesizer._reformat_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"title": "T", "body": "B", "topic": "ai"}
+            synthesize_clusters([cluster])
+
+        mock_build.assert_not_called()
+
+    def test_get_config_called_once_per_synthesize_clusters_call(self):
+        """get_config must be called once per synthesize_clusters() call, not once per story."""
+        clusters = [
+            _make_cluster([_make_story("Story A")]),
+            _make_cluster([_make_story("Story B")]),
+            _make_cluster([_make_story("Story C")]),
+        ]
+
+        with patch("pipeline.synthesizer.get_config", return_value=[]) as mock_get_config, \
+             patch("pipeline.synthesizer._reformat_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"title": "T", "body": "B", "topic": "ai"}
+            synthesize_clusters(clusters)
+
+        # Must be called exactly once regardless of how many clusters there are
+        assert mock_get_config.call_count == 1
+
+    def test_none_style_notes_uses_static_chain(self):
+        """get_config returning None → treated as empty, static chain used."""
+        cluster = _make_cluster([_make_story("AI Funding")])
+
+        with patch("pipeline.synthesizer.get_config", return_value=None), \
+             patch("pipeline.synthesizer._reformat_chain") as mock_chain:
+            mock_chain.invoke.return_value = {"title": "T", "body": "B", "topic": "ai"}
+            results = synthesize_clusters([cluster])
+
+        mock_chain.invoke.assert_called_once()

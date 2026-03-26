@@ -30,6 +30,7 @@ from gmail_service import GmailService
 from pipeline.disambiguator import resolve_ambiguous_clusters
 from pipeline.embedder import embed_and_cluster
 from pipeline.enricher import enrich_stories
+from pipeline.topic_gap_fill import gap_fill_topics
 from pipeline.extractor import extract_stories
 from pipeline.formatter import format_digest
 from pipeline.ranker import rank_stories
@@ -135,6 +136,10 @@ def run(run_id: str, dry_run: bool = False) -> dict:
 
     # --- Step 7: Enrich single-source stories ---
     synthesized = enrich_stories(synthesized)
+
+    # --- Step 7b: Gap-fill uncovered topics via Tavily ---
+    synthesized = gap_fill_topics(synthesized, run_id=run_id)
+    log.debug("daily_brief_gap_filled", run_id=run_id, total_story_count=len(synthesized))
 
     # --- Step 8: Rank ---
     ranked = rank_stories(synthesized)

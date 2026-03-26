@@ -25,6 +25,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from config import settings
 from pipeline.embedder import StoryCluster
 from pipeline.extractor import ExtractedStory
+from tools.db import get_config
 
 log = structlog.get_logger(__name__)
 
@@ -35,13 +36,9 @@ _llm = ChatAnthropic(
     temperature=0,
 )
 
-# Multi-source synthesis: merge N newsletter versions of the same story.
-# We send each source's title + body and ask for a single canonical synthesis.
-# The sources field is used for attribution in the final digest.
-_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You synthesize multiple newsletter versions of the same news story into one authoritative paragraph.
+# Module-level system prompt strings — extracted as constants so _build_system
+# can insert style notes before the JSON format line without string manipulation.
+_SYNTHESIS_SYSTEM_BASE = """You synthesize multiple newsletter versions of the same news story into one authoritative paragraph.
 
 Rules:
 - Preserve ALL specific figures, percentages, dollar amounts, names, and direct quotes exactly as written
@@ -51,21 +48,9 @@ Rules:
 - Do not mention newsletter names or sources in the body text
 
 Return JSON only:
-{{"title": "concise headline under 12 words", "body": "synthesized paragraph", "topic": "one of: AI, markets, policy, health, tech, vc, other"}}""",
-    ),
-    (
-        "human",
-        "{sources_block}",
-    ),
-])
+{{"title": "concise headline under 12 words", "body": "synthesized paragraph", "topic": "one of: AI, markets, policy, health, tech, vc, other"}}"""
 
-_chain = _SYNTHESIS_PROMPT | _llm | JsonOutputParser()
-
-# Single-source reformatter: normalise formatting without losing information.
-_REFORMAT_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """You reformat a newsletter story into clean prose.
+_REFORMAT_SYSTEM_BASE = """You reformat a newsletter story into clean prose.
 
 Rules:
 - Preserve ALL facts, figures, quotes, and names exactly
@@ -74,12 +59,38 @@ Rules:
 - One paragraph, 2-5 sentences
 
 Return JSON only:
-{{"title": "concise headline under 12 words", "body": "clean paragraph", "topic": "one of: AI, markets, policy, health, tech, vc, other"}}""",
-    ),
-    (
-        "human",
-        "Title: {title}\n\n{body}",
-    ),
+{{"title": "concise headline under 12 words", "body": "clean paragraph", "topic": "one of: AI, markets, policy, health, tech, vc, other"}}"""
+
+
+def _build_system(base: str, style_notes: list[str]) -> str:
+    """
+    Insert style_notes before the final JSON format line in a system prompt.
+
+    When style_notes is empty, returns base unchanged — hot path is zero-cost.
+    Notes are rendered as a bullet list between the rules and the JSON format line.
+    """
+    if not style_notes:
+        return base
+    notes_block = "\n".join(f"- {n}" for n in style_notes)
+    # Split off the last two lines ("Return JSON only:" + JSON dict) and insert notes before them
+    *rules, json_label, json_line = base.strip().splitlines()
+    return "\n".join(rules) + f"\n\nAdditional style instructions:\n{notes_block}\n\n{json_label}\n{json_line}"
+
+
+# Multi-source synthesis: merge N newsletter versions of the same story.
+# We send each source's title + body and ask for a single canonical synthesis.
+# The sources field is used for attribution in the final digest.
+_SYNTHESIS_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", _SYNTHESIS_SYSTEM_BASE),
+    ("human", "{sources_block}"),
+])
+
+_chain = _SYNTHESIS_PROMPT | _llm | JsonOutputParser()
+
+# Single-source reformatter: normalise formatting without losing information.
+_REFORMAT_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", _REFORMAT_SYSTEM_BASE),
+    ("human", "Title: {title}\n\n{body}"),
 ])
 
 _reformat_chain = _REFORMAT_PROMPT | _llm | JsonOutputParser()
@@ -108,12 +119,18 @@ def synthesize_clusters(clusters: list[StoryCluster]) -> list[SynthesizedStory]:
     Multi-source clusters use LLM synthesis. Single-source clusters are
     reformatted with a lighter LLM pass to normalise newsletter formatting.
 
+    Reads synthesis_style_notes from agent_config ONCE at the top — not inside
+    the per-story loop — to avoid N DB calls per run.
+
     Returns list of SynthesizedStory objects ready for ranking and formatting.
     """
+    # Read style notes once here; passed down to avoid repeated DB calls per story.
+    style_notes: list[str] = get_config("synthesis_style_notes") or []
+
     results: list[SynthesizedStory] = []
 
     for cluster in clusters:
-        story = _synthesize_cluster(cluster)
+        story = _synthesize_cluster(cluster, style_notes)
         if story:
             results.append(story)
 
@@ -126,7 +143,7 @@ def synthesize_clusters(clusters: list[StoryCluster]) -> list[SynthesizedStory]:
     return results
 
 
-def _synthesize_cluster(cluster: StoryCluster) -> SynthesizedStory | None:
+def _synthesize_cluster(cluster: StoryCluster, style_notes: list[str]) -> SynthesizedStory | None:
     """Synthesize a single cluster. Returns None if synthesis fails."""
     source_newsletters = cluster.source_newsletters
     source_emails = list({s.source_email for s in cluster.stories})
@@ -137,6 +154,7 @@ def _synthesize_cluster(cluster: StoryCluster) -> SynthesizedStory | None:
             cluster.stories[0],
             cluster.representative_embedding,
             all_key_facts,
+            style_notes,
         )
 
     return _synthesize_multi(
@@ -145,6 +163,7 @@ def _synthesize_cluster(cluster: StoryCluster) -> SynthesizedStory | None:
         source_newsletters,
         source_emails,
         all_key_facts,
+        style_notes,
     )
 
 
@@ -152,10 +171,21 @@ def _synthesize_single(
     story: ExtractedStory,
     embedding: list[float],
     key_facts: list[str],
+    style_notes: list[str] = (),
 ) -> SynthesizedStory | None:
     """Reformat a single-source story into clean prose."""
     try:
-        result = _reformat_chain.invoke({
+        # When style_notes is non-empty, build a dynamic chain with the augmented
+        # system prompt; otherwise use the module-level chain (no-op hot path).
+        if style_notes:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", _build_system(_REFORMAT_SYSTEM_BASE, style_notes)),
+                ("human", "Title: {title}\n\n{body}"),
+            ])
+            chain = prompt | _llm | JsonOutputParser()
+        else:
+            chain = _reformat_chain
+        result = chain.invoke({
             "title": story.title,
             "body": story.body[:_MAX_SOURCE_CHARS],
         })
@@ -191,12 +221,23 @@ def _synthesize_multi(
     source_newsletters: list[str],
     source_emails: list[str],
     key_facts: list[str],
+    style_notes: list[str] = (),
 ) -> SynthesizedStory | None:
     """Merge multiple newsletter versions into one canonical story."""
     sources_block = _build_sources_block(stories)
 
     try:
-        result = _chain.invoke({"sources_block": sources_block})
+        # When style_notes is non-empty, build a dynamic chain with the augmented
+        # system prompt; otherwise use the module-level chain (no-op hot path).
+        if style_notes:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", _build_system(_SYNTHESIS_SYSTEM_BASE, style_notes)),
+                ("human", "{sources_block}"),
+            ])
+            chain = prompt | _llm | JsonOutputParser()
+        else:
+            chain = _chain
+        result = chain.invoke({"sources_block": sources_block})
         title = result.get("title", stories[0].title).strip()
         body = result.get("body", "").strip()
         topic = _normalise_topic(result.get("topic", "other"))
