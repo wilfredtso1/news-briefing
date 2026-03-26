@@ -126,3 +126,37 @@ changing the architecture.
 **Decision**: voyage-3 at 1024 dimensions. Keeps the dependency surface to Anthropic's ecosystem. Quality difference over voyage-3-lite is worth the cost for accurate story deduplication — a false merge (two different stories treated as one) is a visible quality defect.
 
 **Consequences**: `stories.embedding` column is `vector(1024)`. If we ever switch embedding models, a migration will be needed to re-embed all existing stories.
+
+---
+
+## 2026-03-26: Weekend catch-up dedup delegates to DB query (no pgvector call in pipeline)
+
+**Status**: Accepted
+
+**Context**: Weekend catch-up needs to deduplicate stories that appeared across multiple days (e.g., the same Fed story covered Monday, Tuesday, and Wednesday). The task spec says "cross-day dedup using stored embedding vectors (pgvector cosine similarity)."
+
+**Options considered**:
+1. **Re-embed and similarity-search in the pipeline** — Load all stories, re-embed each with Voyage AI, compute pairwise cosine similarity, drop near-duplicates. Pros: flexible thresholding. Cons: re-embedding is unnecessary cost since embeddings are already stored; N² similarity computation; adds Voyage API dependency to weekend pipeline.
+2. **pgvector query in db.py** — `get_unacknowledged_stories()` uses `DISTINCT ON (cluster_id)` to deduplicate — stories in the same cluster appear once. Pros: no re-embedding cost, dedup happens in the query, consistent with how the daily brief deduplicates. Cons: only deduplicates at the cluster level, not by embedding similarity (but cluster_id is the canonical dedup unit).
+3. **Hybrid: use cluster_id as primary dedup, pgvector similarity as secondary** — Extra similarity pass over the deduplicated set. Cons: over-engineering; cluster_id already captures semantic identity since the daily brief assigned it.
+
+**Decision**: Option 2 — delegate to `get_unacknowledged_stories()` which uses `DISTINCT ON (cluster_id)`. The cluster_id is assigned during the daily brief pipeline by the embedder+disambiguator. Two stories in the same cluster are already known duplicates. Running pgvector similarity again would be redundant. "Do not re-embed" is explicitly stated in the task spec.
+
+**Consequences**: Weekend catch-up dedup quality is bounded by daily brief clustering quality. If a story was assigned a wrong cluster during the week, it may appear twice. Acceptable for a personal tool.
+
+---
+
+## 2026-03-26: Deep Read formats each article individually, no synthesis LLM call
+
+**Status**: Accepted
+
+**Context**: Deep Read processes long-form essays/analyses. Needed to decide how to format 3–5 articles — could synthesize across them or present individually.
+
+**Options considered**:
+1. **Synthesize across articles** — Use synthesizer.py to merge insights from all articles into a meta-summary. Pros: concise. Cons: destroys the individual voice and nuance that makes long-form essays worth reading; misses the point of "deep read."
+2. **Present each article individually at full treatment** — No LLM synthesis. Extract each article's content and present in full with source attribution and link. Pros: preserves author voice, lets the reader engage with each piece fully. Cons: longer digest.
+3. **Use formatter.py's digest_type="deep_read"** — Force all stories to full treatment via the existing formatter. Cons: formatter doesn't support original links and synthesizes topics together.
+
+**Decision**: Option 2 — custom `_format_deep_read()` that presents each article individually with its title, source, link, and full body. We import `extractor.py` for content extraction but bypass the synthesizer entirely. The format is sequential (article 1, article 2, ...) not topic-grouped.
+
+**Consequences**: Deep read digest is longer and doesn't use formatter.py's topic grouping. The word budget is effectively unbounded (capped only by 3–5 articles × article length). The formatter.py import is still used for the subject line via `format_digest` in weekend_catchup — not deep_read.
