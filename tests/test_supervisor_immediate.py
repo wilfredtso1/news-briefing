@@ -976,3 +976,326 @@ class TestExecuteCommandNode:
 
         mock_run.assert_called_once()
         assert result["command_triggered"] == "daily_brief"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Branch C expansions — LOW_RISK_CONFIG_KEYS new entries
+# ---------------------------------------------------------------------------
+
+
+class TestLowRiskConfigKeysExpanded:
+    """Guard the new low-risk keys added in Branch C."""
+
+    def test_synthesis_style_notes_in_low_risk_keys(self):
+        from supervisor.immediate import LOW_RISK_CONFIG_KEYS
+        assert "synthesis_style_notes" in LOW_RISK_CONFIG_KEYS
+
+    def test_web_search_topics_in_low_risk_keys(self):
+        from supervisor.immediate import LOW_RISK_CONFIG_KEYS
+        assert "web_search_topics" in LOW_RISK_CONFIG_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Tests: synthesis_style_notes and web_search_topics feedback flows
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesisStyleNotesFeedback:
+    """synthesis_style_notes feedback → set_config called, returned in config_delta."""
+
+    def test_synthesis_style_notes_applied_immediately(self):
+        """synthesis_style_notes is low-risk — applied immediately, returned in config_delta."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event", return_value="evt-sn-1"),
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "synthesis_style_notes",
+                "value": ["write shorter stories", "use bullet points"],
+                "reasoning": "user wants shorter stories",
+            }
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "write shorter stories please", "thread-1")
+
+        mock_set.assert_called_once_with(
+            "synthesis_style_notes",
+            ["write shorter stories", "use bullet points"],
+            updated_by="supervisor",
+        )
+        assert "synthesis_style_notes" in result.config_delta
+        assert result.config_delta["synthesis_style_notes"] == ["write shorter stories", "use bullet points"]
+
+    def test_synthesis_style_notes_validate_as_low_risk(self):
+        """validate_change_node returns risk_level=low for synthesis_style_notes."""
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(proposed_key="synthesis_style_notes"))
+        assert result["risk_level"] == "low"
+
+
+class TestWebSearchTopicsFeedback:
+    """web_search_topics feedback → set_config called."""
+
+    def test_web_search_topics_applied_immediately(self):
+        """web_search_topics is low-risk — applied immediately."""
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("supervisor.immediate._extract_chain") as mock_extract,
+            patch("supervisor.immediate.set_config") as mock_set,
+            patch("supervisor.immediate.insert_feedback_event", return_value="evt-wst-1"),
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "feedback"}
+            mock_extract.invoke.return_value = {
+                "key": "web_search_topics",
+                "value": ["markets", "sports"],
+                "reasoning": "user wants markets and sports coverage",
+            }
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "add sports headlines", "thread-1")
+
+        mock_set.assert_called_once_with(
+            "web_search_topics",
+            ["markets", "sports"],
+            updated_by="supervisor",
+        )
+        assert "web_search_topics" in result.config_delta
+
+    def test_web_search_topics_validate_as_low_risk(self):
+        """validate_change_node returns risk_level=low for web_search_topics."""
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(proposed_key="web_search_topics"))
+        assert result["risk_level"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# Tests: reclassify_source_node
+# ---------------------------------------------------------------------------
+
+
+class TestReclassifySourceNode:
+    """reclassify_source_node in isolation."""
+
+    def test_valid_reclassify_calls_update_source_type(self):
+        """source_reclassify with valid type → update_source_type called, action_taken set."""
+        # Use create=True because update_source_type is owned by Branch A and may not exist yet
+        with (
+            patch("tools.db.update_source_type", create=True) as mock_update,
+            patch("supervisor.immediate.insert_feedback_event", return_value="evt-rc-1"),
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            from supervisor.immediate import reclassify_source_node
+            state = _make_state(
+                proposed_value={"email": "crew@morningbrew.com", "type": "news_brief"},
+                raw_reply="include Morning Brew in daily brief",
+            )
+            result = reclassify_source_node(state)
+
+        mock_update.assert_called_once_with("crew@morningbrew.com", "news_brief")
+        assert result["action_taken"] == "reclassified crew@morningbrew.com as news_brief"
+
+    def test_invalid_type_skips_db_call_no_raise(self):
+        """source_reclassify with invalid type → no DB call, no raise, action_taken indicates skip."""
+        # No DB call happens (returns early), so no patch needed for update_source_type
+        from supervisor.immediate import reclassify_source_node
+        state = _make_state(
+            proposed_value={"email": "test@example.com", "type": "invalid_type"},
+            raw_reply="move to daily brief",
+        )
+        result = reclassify_source_node(state)
+
+        assert result["action_taken"] == "reclassify_skipped_invalid_type"
+        # No exception raised
+
+    def test_long_form_type_is_valid(self):
+        """long_form is a valid type for source_reclassify."""
+        with (
+            patch("tools.db.update_source_type", create=True) as mock_update,
+            patch("supervisor.immediate.insert_feedback_event", return_value="evt-rc-2"),
+            patch("supervisor.immediate.mark_feedback_applied"),
+        ):
+            from supervisor.immediate import reclassify_source_node
+            state = _make_state(
+                proposed_value={"email": "test@long.com", "type": "long_form"},
+                raw_reply="move to deep read",
+            )
+            result = reclassify_source_node(state)
+
+        mock_update.assert_called_once_with("test@long.com", "long_form")
+        assert "long_form" in result["action_taken"]
+
+    def test_reclassify_routes_from_validate_change(self):
+        """validate_change_node assigns risk_level=source for source_reclassify key."""
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(proposed_key="source_reclassify"))
+        assert result["risk_level"] == "source"
+
+    def test_route_after_validate_source_goes_to_reclassify(self):
+        """route_after_validate returns 'reclassify_source' for source risk level."""
+        from supervisor.immediate import route_after_validate
+        assert route_after_validate(_make_state(risk_level="source")) == "reclassify_source"
+
+
+# ---------------------------------------------------------------------------
+# Tests: unknown key + reply length → code_change trigger logic
+# ---------------------------------------------------------------------------
+
+
+class TestUnknownKeyCodeChangeTrigger:
+    """Unknown key with long reply → code_change; with short reply → no action."""
+
+    def test_unknown_key_short_reply_no_code_change(self):
+        """Unknown key + reply ≤50 chars → risk_level=none, no code change triggered."""
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(
+            proposed_key="unknown",
+            raw_reply="short",  # ≤50 chars
+        ))
+        assert result["risk_level"] == "none"
+
+    def test_unknown_key_long_reply_triggers_code_change(self):
+        """Unknown key + reply >50 chars → risk_level=code_change."""
+        from supervisor.immediate import validate_change_node
+        long_reply = "x" * 51  # definitely >50 chars
+        result = validate_change_node(_make_state(
+            proposed_key="unknown",
+            raw_reply=long_reply,
+        ))
+        assert result["risk_level"] == "code_change"
+
+    def test_unknown_key_exactly_50_chars_no_code_change(self):
+        """Unknown key + reply exactly 50 chars → risk_level=none (boundary: >50 required)."""
+        from supervisor.immediate import validate_change_node
+        result = validate_change_node(_make_state(
+            proposed_key="unknown",
+            raw_reply="x" * 50,
+        ))
+        assert result["risk_level"] == "none"
+
+    def test_route_after_validate_code_change_goes_to_trigger(self):
+        """route_after_validate returns 'trigger_code_change' for code_change risk."""
+        from supervisor.immediate import route_after_validate
+        assert route_after_validate(_make_state(risk_level="code_change")) == "trigger_code_change"
+
+    def test_validate_change_node_long_unknown_is_code_change(self):
+        """Unknown key + long reply > 50 chars → risk_level=code_change, not none."""
+        from supervisor.immediate import validate_change_node
+        long_reply = "I want to completely restructure the briefing format with new sections and categories"
+        result = validate_change_node(_make_state(
+            proposed_key="unknown",
+            raw_reply=long_reply,
+        ))
+        assert result["risk_level"] == "code_change", (
+            f"Expected code_change risk for long unknown reply, got {result['risk_level']!r}"
+        )
+
+    def test_trigger_code_change_node_spawns_daemon_thread(self):
+        """trigger_code_change_node spawns a daemon thread with run_code_change_agent."""
+        from unittest.mock import MagicMock
+        import sys
+        import types
+
+        mock_thread = MagicMock()
+        mock_agent = MagicMock()
+
+        # Inject a fake supervisor.code_change_agent module for the lazy import
+        fake_module = types.ModuleType("supervisor.code_change_agent")
+        fake_module.run_code_change_agent = mock_agent
+        sys.modules["supervisor.code_change_agent"] = fake_module
+
+        try:
+            with patch("threading.Thread", return_value=mock_thread) as mock_thread_cls:
+                from supervisor.immediate import trigger_code_change_node
+                state = _make_state(raw_reply="x" * 100, digest_id="digest-code")
+                result = trigger_code_change_node(state)
+        finally:
+            # Clean up the fake module
+            sys.modules.pop("supervisor.code_change_agent", None)
+
+        # A thread was created and started
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once()
+        assert result["action_taken"] == "triggered code_change_agent"
+        # Verify it was a daemon thread
+        call_kwargs = mock_thread_cls.call_args
+        assert call_kwargs.kwargs.get("daemon") is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: code_change_approval → approve_code_change_node
+# ---------------------------------------------------------------------------
+
+
+class TestCodeChangeApproval:
+    """code_change_approval reply → git push subprocess called."""
+
+    def test_code_change_approval_routes_to_approve(self):
+        """route_after_acknowledge returns 'approve_code_change' for code_change_approval."""
+        from supervisor.immediate import route_after_acknowledge
+        assert route_after_acknowledge(_make_state(reply_type="code_change_approval")) == "approve_code_change"
+
+    def test_approve_code_change_node_calls_git_push(self):
+        """approve_code_change_node runs git push subprocess."""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["git", "push"],
+            returncode=0,
+            stdout="Everything up-to-date",
+            stderr="",
+        )
+
+        with patch("subprocess.run", return_value=mock_result) as mock_sub:
+            from supervisor.immediate import approve_code_change_node
+            state = _make_state(digest_id="digest-approve")
+            result = approve_code_change_node(state)
+
+        mock_sub.assert_called_once()
+        call_args = mock_sub.call_args
+        assert call_args.args[0] == ["git", "push"]
+        assert result["action_taken"] == "git push succeeded"
+
+    def test_approve_code_change_node_handles_git_failure(self):
+        """approve_code_change_node captures git push failure without raising."""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["git", "push"],
+            returncode=1,
+            stdout="",
+            stderr="Permission denied",
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            from supervisor.immediate import approve_code_change_node
+            state = _make_state(digest_id="digest-approve-fail")
+            result = approve_code_change_node(state)
+
+        assert "git push failed" in result["action_taken"]
+        assert "Permission denied" in result["action_taken"]
+
+    def test_full_graph_code_change_approval_calls_git_push(self):
+        """Full graph: code_change_approval reply type → approve_code_change_node runs git push."""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["git", "push"], returncode=0, stdout="", stderr=""
+        )
+
+        with (
+            patch("supervisor.immediate._classify_chain") as mock_classify,
+            patch("subprocess.run", return_value=mock_result) as mock_sub,
+        ):
+            mock_classify.invoke.return_value = {"reply_type": "code_change_approval"}
+
+            from supervisor.immediate import run_immediate_supervisor
+            result = run_immediate_supervisor("digest-1", "approved", "thread-1")
+
+        mock_sub.assert_called_once()
+        assert mock_sub.call_args.args[0] == ["git", "push"]
+        assert result.reply_type == "code_change_approval"
