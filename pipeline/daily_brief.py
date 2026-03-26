@@ -41,6 +41,8 @@ from tools.db import (
     insert_story,
     mark_digest_sent,
 )
+from tools.tracing import traced
+from tools.retry import with_retry
 
 log = structlog.get_logger(__name__)
 
@@ -48,6 +50,7 @@ log = structlog.get_logger(__name__)
 _BRIEF_CATEGORY = "news_brief"
 
 
+@traced("daily_brief")
 def run(run_id: str, dry_run: bool = False) -> dict:
     """
     Execute the full daily brief pipeline.
@@ -160,12 +163,12 @@ def run(run_id: str, dry_run: bool = False) -> dict:
 
     # --- Step 10: Send email ---
     from config import settings
-    sent_message_id = gmail.send_message(
+    sent_message_id, sent_thread_id = with_retry(gmail.send_message)(
         to=settings.gmail_send_as,
         subject=digest.subject,
         body=digest.body,
     )
-    log.info("daily_brief_sent", run_id=run_id, gmail_message_id=sent_message_id)
+    log.info("daily_brief_sent", run_id=run_id, gmail_message_id=sent_message_id, thread_id=sent_thread_id)
 
     # --- Step 11: Archive source newsletters ---
     gmail.archive_messages(processed_message_ids)
@@ -177,6 +180,7 @@ def run(run_id: str, dry_run: bool = False) -> dict:
         digest=digest,
         ranked=ranked,
         sent_message_id=sent_message_id,
+        thread_id=sent_thread_id,
     )
 
     log.info(
@@ -201,10 +205,11 @@ def _persist_digest(
     digest,
     ranked,
     sent_message_id: str,
+    thread_id: str,
 ) -> str:
     """Persist digest and stories to database. Returns digest_id."""
     try:
-        digest_id = create_digest(digest_type="daily", run_id=run_id)
+        digest_id = create_digest(digest_type="daily_brief", run_id=run_id)
 
         for story in ranked:
             cluster_id = get_or_create_cluster(story.title)
@@ -223,6 +228,8 @@ def _persist_digest(
             digest_id=digest_id,
             word_count=digest.word_count,
             story_count=digest.story_count,
+            sent_message_id=sent_message_id,
+            thread_id=thread_id,
         )
 
     except Exception as e:

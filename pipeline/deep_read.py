@@ -28,6 +28,8 @@ from tools.db import (
     insert_story,
     mark_digest_sent,
 )
+from tools.retry import with_retry
+from tools.tracing import traced
 
 log = structlog.get_logger(__name__)
 
@@ -40,6 +42,7 @@ _MAX_ARTICLES = 5
 _DEFAULT_THRESHOLD = 5
 
 
+@traced("deep_read")
 def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
     """
     Execute the deep read pipeline.
@@ -125,12 +128,12 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
 
     # --- Step 6: Send via Gmail ---
     from config import settings
-    sent_message_id = gmail.send_message(
+    sent_message_id, sent_thread_id = with_retry(gmail.send_message)(
         to=settings.gmail_send_as,
         subject=subject,
         body=body,
     )
-    log.info("deep_read_sent", run_id=run_id, gmail_message_id=sent_message_id)
+    log.info("deep_read_sent", run_id=run_id, gmail_message_id=sent_message_id, thread_id=sent_thread_id)
 
     # --- Step 7: Archive source emails ---
     archive_ids = [msg.message_id for msg in selected_messages]
@@ -138,7 +141,7 @@ def run_deep_read(run_id: str, dry_run: bool = False) -> dict:
     log.info("deep_read_archived", run_id=run_id, count=len(archive_ids))
 
     # --- Step 8: Persist digest record ---
-    digest_id = _persist_digest(run_id=run_id, articles=articles, word_count=word_count)
+    digest_id = _persist_digest(run_id=run_id, articles=articles, word_count=word_count, sent_message_id=sent_message_id, thread_id=sent_thread_id)
 
     log.info(
         "deep_read_complete",
@@ -292,6 +295,8 @@ def _persist_digest(
     run_id: str,
     articles: list[tuple[EmailMessage, ExtractedStory]],
     word_count: int,
+    sent_message_id: str,
+    thread_id: str,
 ) -> str:
     """Persist digest and stories to database. Returns digest_id."""
     try:
@@ -314,6 +319,8 @@ def _persist_digest(
             digest_id=digest_id,
             word_count=word_count,
             story_count=len(articles),
+            sent_message_id=sent_message_id,
+            thread_id=thread_id,
         )
 
     except Exception as e:

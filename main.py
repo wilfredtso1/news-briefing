@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 
 # Config is validated at import time — crashes immediately if env vars are missing
 from config import settings  # noqa: F401
+from tools.alerts import send_alert
 
 log = structlog.get_logger(__name__)
 
@@ -148,6 +149,7 @@ def _run_daily_brief(run_id: str) -> None:
         daily_brief.run(run_id=run_id)
     except Exception as e:
         log.error("daily_brief_failed", run_id=run_id, error=str(e))
+        send_alert("daily_brief", e, run_id)
         raise
 
 
@@ -248,6 +250,7 @@ def _run_deep_read(run_id: str) -> None:
         log.info("deep_read_finished", run_id=run_id, status=result.get("status"))
     except Exception as e:
         log.error("deep_read_failed", run_id=run_id, error=str(e))
+        send_alert("deep_read", e, run_id)
         raise
 
 
@@ -261,6 +264,7 @@ def _run_weekend_catchup(run_id: str) -> None:
         log.info("weekend_catchup_finished", run_id=run_id, status=result.get("status"))
     except Exception as e:
         log.error("weekend_catchup_failed", run_id=run_id, error=str(e))
+        send_alert("weekend_catchup", e, run_id)
         raise
 
 

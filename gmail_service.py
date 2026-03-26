@@ -182,11 +182,13 @@ class GmailService:
     # Sending
     # ---------------------------------------------------------------------------
 
-    def send_message(self, to: str, subject: str, body: str, thread_id: str | None = None) -> str:
+    def send_message(
+        self, to: str, subject: str, body: str, thread_id: str | None = None
+    ) -> tuple[str, str]:
         """
         Send a plain text email via the Gmail API.
         Pass thread_id to send as a reply within an existing thread.
-        Returns the sent message ID.
+        Returns (message_id, thread_id) — both needed to poll for replies later.
         """
         mime = MIMEText(body, "plain", "utf-8")
         mime["to"] = to
@@ -202,8 +204,10 @@ class GmailService:
             userId="me",
             body=body_payload,
         ).execute()
-        log.info("gmail_message_sent", to=to, subject=subject, message_id=sent["id"])
-        return sent["id"]
+        message_id = sent["id"]
+        sent_thread_id = sent["threadId"]
+        log.info("gmail_message_sent", to=to, subject=subject, message_id=message_id, thread_id=sent_thread_id)
+        return message_id, sent_thread_id
 
     # ---------------------------------------------------------------------------
     # Reply detection (polling-based — no webhooks)

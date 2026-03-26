@@ -27,6 +27,8 @@ from tools.db import (
     insert_story,
     mark_digest_sent,
 )
+from tools.retry import with_retry
+from tools.tracing import traced
 
 log = structlog.get_logger(__name__)
 
@@ -34,6 +36,7 @@ log = structlog.get_logger(__name__)
 _DAYS_BACK = 6
 
 
+@traced("weekend_catchup")
 def run_weekend_catchup(run_id: str, dry_run: bool = False) -> dict:
     """
     Execute the weekend catch-up pipeline.
@@ -96,15 +99,15 @@ def run_weekend_catchup(run_id: str, dry_run: bool = False) -> dict:
     # --- Step 5: Send via Gmail ---
     from config import settings
     gmail = GmailService()
-    sent_message_id = gmail.send_message(
+    sent_message_id, sent_thread_id = with_retry(gmail.send_message)(
         to=settings.gmail_send_as,
         subject=digest.subject,
         body=digest.body,
     )
-    log.info("weekend_catchup_sent", run_id=run_id, gmail_message_id=sent_message_id)
+    log.info("weekend_catchup_sent", run_id=run_id, gmail_message_id=sent_message_id, thread_id=sent_thread_id)
 
     # --- Step 6: Persist digest record ---
-    digest_id = _persist_digest(run_id=run_id, digest=digest, ranked=ranked)
+    digest_id = _persist_digest(run_id=run_id, digest=digest, ranked=ranked, sent_message_id=sent_message_id, thread_id=sent_thread_id)
 
     log.info(
         "weekend_catchup_complete",
@@ -154,7 +157,7 @@ def _db_row_to_synthesized_story(row: dict) -> SynthesizedStory | None:
 
 
 
-def _persist_digest(run_id: str, digest, ranked: list[SynthesizedStory]) -> str:
+def _persist_digest(run_id: str, digest, ranked: list[SynthesizedStory], sent_message_id: str, thread_id: str) -> str:
     """Persist digest and stories to database. Returns digest_id."""
     try:
         digest_id = create_digest(digest_type="weekend_catchup", run_id=run_id)
@@ -176,6 +179,8 @@ def _persist_digest(run_id: str, digest, ranked: list[SynthesizedStory]) -> str:
             digest_id=digest_id,
             word_count=digest.word_count,
             story_count=digest.story_count,
+            sent_message_id=sent_message_id,
+            thread_id=thread_id,
         )
 
     except Exception as e:

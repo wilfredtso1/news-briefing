@@ -118,14 +118,39 @@ def create_digest(digest_type: str, run_id: str) -> str:
     return digest_id
 
 
-def mark_digest_sent(digest_id: str, word_count: int, story_count: int) -> None:
-    """Record delivery timestamp and word/story counts."""
+def mark_digest_sent(
+    digest_id: str,
+    word_count: int,
+    story_count: int,
+    sent_message_id: str | None = None,
+    thread_id: str | None = None,
+) -> None:
+    """
+    Record delivery timestamp, word/story counts, and Gmail identifiers.
+    thread_id and sent_message_id are required by _run_poll_replies to detect
+    user replies; they are optional here so weekend_catchup and deep_read can
+    call this function the same way as daily_brief.
+    """
     with get_conn() as conn:
         conn.execute(
-            "UPDATE digests SET sent_at = NOW(), word_count = %s, story_count = %s WHERE id = %s",
-            (word_count, story_count, digest_id),
+            """
+            UPDATE digests
+            SET sent_at = NOW(),
+                word_count = %s,
+                story_count = %s,
+                sent_message_id = %s,
+                thread_id = %s
+            WHERE id = %s
+            """,
+            (word_count, story_count, sent_message_id, thread_id, digest_id),
         )
-    log.info("digest_sent", digest_id=digest_id, word_count=word_count, story_count=story_count)
+    log.info(
+        "digest_sent",
+        digest_id=digest_id,
+        word_count=word_count,
+        story_count=story_count,
+        thread_id=thread_id,
+    )
 
 
 def mark_digest_acknowledged(digest_id: str) -> None:

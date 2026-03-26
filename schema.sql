@@ -48,6 +48,10 @@ CREATE TABLE digests (
     acknowledged_at TIMESTAMPTZ,
     word_count      INTEGER,
     story_count     INTEGER,
+    -- Gmail thread/message IDs stored at send time; used by _run_poll_replies
+    -- to detect user replies. NULL for digests created before migration 001.
+    thread_id       TEXT,
+    sent_message_id TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -144,6 +148,11 @@ CREATE INDEX idx_digests_sent_at       ON digests(sent_at DESC);
 CREATE INDEX idx_digests_unacked
     ON digests(sent_at DESC)
     WHERE acknowledged_at IS NULL;
+
+-- Reply polling: look up digest by thread_id
+CREATE INDEX idx_digests_thread_id
+    ON digests(thread_id)
+    WHERE thread_id IS NOT NULL;
 
 -- Feedback: link back to digest
 CREATE INDEX idx_feedback_digest_id    ON feedback_events(digest_id);
