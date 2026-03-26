@@ -1,14 +1,47 @@
 # Changelog
 
-## [Unreleased] — Phase 3/4/5 (in progress)
+## [Unreleased] — Integration Sprint
 
-### In Progress
-- `supervisor/immediate.py` — LangGraph immediate supervisor: reply classification, config updates, unsubscribe executor
-- `pipeline/weekend_catchup.py` — Sunday catch-up pipeline drawing from unacknowledged stories
-- `pipeline/deep_read.py` — Long-form queue pipeline with threshold trigger
-- `tools/tracing.py` — LangSmith tracing decorator for all LLM calls
-- `tools/retry.py` — Retry wrapper with retryable vs. fatal error discrimination
-- `tools/alerts.py` — Alert email on pipeline failure after retries exhausted
+### Pending Integration
+- Thread `@traced` / `with_retry` / `send_alert` through all pipeline orchestrators
+- Schema migration: add `thread_id` and `sent_message_id` columns to `digests` table
+- Merge branches: phase-5-infra → phase-3-supervisor → phase-4-pipelines → main
+- E2E validation: supervisor reply processing against real Gmail; weekend_catchup + deep_read against live DB
+
+---
+
+## [Phase 5 — Infrastructure] — 2026-03-26
+
+### Added
+- `tools/tracing.py` — `@traced(name)` decorator wrapping sync/async callables; no-op when LANGSMITH_API_KEY absent or langsmith not installed; uses functools.wraps to preserve metadata
+- `tools/retry.py` — `with_retry(fn, max_attempts=3, delay=5)` for sync and async; fatal errors (ValueError, TypeError, AuthenticationError) re-raise immediately; all other errors retry up to max_attempts with delay between attempts
+- `tools/alerts.py` — `send_alert(pipeline_name, error, run_id)` sends plain-text alert email via gmail_service; silent no-op if ALERT_EMAIL not set; catches all gmail_service exceptions to never re-raise
+
+### Fixed
+- Removed dead `_is_retryable()` function from retry.py — defined but never called; actual retry logic only uses `_is_fatal()`
+
+---
+
+## [Phase 4 — Weekend Catch-Up & Deep Read] — 2026-03-26
+
+### Added
+- `pipeline/weekend_catchup.py` — Sunday catch-up pipeline: queries unacknowledged daily brief stories (6 days back), cross-day dedup via DISTINCT ON cluster_id (DB level, no re-embedding), reranks by importance via ranker.py, formats at 30-min word budget, delivers via Gmail; dry_run mode for testing
+- `pipeline/deep_read.py` — Long-form queue pipeline: fetches unread emails from active long_form sources, checks threshold from agent_config (Thursday fallback), caps at 5 articles, aborts if fewer than 3 extracted; preserves original article voice (no synthesis); original links extracted from HTML
+- `tests/test_weekend_catchup.py` — 20 unit tests + 2 `@pytest.mark.e2e` tests covering all orchestration paths, DB row conversion, error modes
+- `tests/test_deep_read.py` — unit tests covering source fetching, threshold checks, URL extraction, and dry_run behaviour
+
+### Fixed
+- Removed dead `_load_weekend_word_budget()` function and unused `get_config` import from weekend_catchup.py — format_digest reads the word budget internally via digest_type
+
+---
+
+## [Phase 3 — Acknowledgment & Immediate Supervisor] — 2026-03-26
+
+### Added
+- `supervisor/immediate.py` — LangGraph StateGraph with sequential routing: classify_reply (Haiku) → maybe_acknowledge → extract_change (Haiku) → validate_change → apply_change|queue_change → log_feedback_event; LOW_RISK_CONFIG_KEYS = {topic_weights, word_budget, cosine_similarity_threshold}; high-risk changes (prompt_edit, unsubscribe, source_change, unknown keys) queued for human review
+- `supervisor/__init__.py` — exports SupervisorResult dataclass and run_immediate_supervisor
+- `main.py` `_run_poll_replies()` — polls unacknowledged digests (7 days back) for Gmail thread replies; runs each reply through immediate supervisor; single-reply failures are non-fatal; digests without thread_id skipped (schema gap noted)
+- `tests/test_supervisor_immediate.py` — 64 tests: full graph tests for all reply types and risk levels, node-level unit tests, routing function tests, SupervisorResult dataclass contract, LOW_RISK_CONFIG_KEYS guard
 
 ---
 

@@ -1,28 +1,15 @@
 # TODO
 
-## In Progress — Phase 3 (agent building)
+## Integration Sprint — Now Unblocked
 
-- [ ] `supervisor/immediate.py` — LangGraph graph: classify reply → apply/queue changes
-- [ ] Reply polling: query recent digest thread IDs, call `get_thread_replies`, mark `acknowledged_at`
-- [ ] Wire Phase 3 into `main.py` `_run_poll_replies`
-- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto, update source status
-- [ ] Feedback event logging: persist every reply + supervisor interpretation to `feedback_events`
-- [ ] `tests/test_supervisor_immediate.py` — >90% coverage
+- [ ] Merge order: phase-5-infra → phase-3-supervisor → phase-4-pipelines (into main)
+- [ ] Thread `@traced` / `with_retry` / `send_alert` through daily_brief.py, weekend_catchup.py, deep_read.py, _run_poll_replies
+- [ ] Schema migration: add `thread_id` and `sent_message_id` columns to `digests` table (needed by `_run_poll_replies`)
+- [ ] Unsubscribe executor: call List-Unsubscribe header URL/mailto, update source status (was out of scope for Phase 3 agent)
+- [ ] E2E test Phase 3 supervisor against real Gmail reply thread
+- [ ] E2E test Phase 4 pipelines (weekend_catchup, deep_read) against live DB with `@pytest.mark.e2e`
 
-## In Progress — Phase 4 (agent building)
-
-- [ ] `pipeline/weekend_catchup.py` — query unacknowledged stories, dedup via stored embeddings, rerank by importance, format at 30-min budget
-- [ ] `pipeline/deep_read.py` — long-form queue pipeline, threshold check from agent_config, full treatment with original links
-- [ ] Wire Phase 4 into `main.py` `_run_weekend_catchup`, `_run_deep_read`
-- [ ] `tests/test_weekend_catchup.py`, `tests/test_deep_read.py` — unit + `@pytest.mark.e2e` tests
-
-## In Progress — Phase 5 Infrastructure (agent building)
-
-- [ ] `tools/tracing.py` — `@traced(name)` decorator; no-op if LANGSMITH_API_KEY absent
-- [ ] `tools/retry.py` — `with_retry(fn, max_attempts=3)` with retryable vs. fatal error discrimination
-- [ ] `tools/alerts.py` — `send_alert(pipeline_name, error, run_id)` via gmail_service
-
-## Blocked on Phase 3/4/5 completion
+## Blocked on integration sprint completion
 
 - [ ] `supervisor/weekly.py` — LangGraph weekly pattern sweep (needs real feedback_events in DB)
 - [ ] Railway deployment config + cron schedule setup
@@ -42,6 +29,9 @@
 
 ## Completed
 
+- [x] Phase 3 supervisor reviewed, 64/64 tests passing, pushed to phase-3-supervisor — 2026-03-26
+- [x] Phase 4 pipelines reviewed, tests fixed, 60/60 passing, pushed to phase-4-pipelines — 2026-03-26
+- [x] Phase 5 infra reviewed, dead code removed from retry.py, 60/60 passing, pushed to phase-5-infra — 2026-03-26
 - [x] AGENTS.md — concurrent build plan for Phases 3–5 — 2026-03-26
 - [x] Git repository initialized, remote set to wilfredtso1/news-briefing — 2026-03-26
 - [x] Worktrees created for phase-3-supervisor, phase-4-pipelines, phase-5-infra branches — 2026-03-26
