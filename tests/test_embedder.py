@@ -187,6 +187,26 @@ class TestFilterAlreadyCovered:
         kept_s, kept_e = _filter_already_covered(stories, embs, recent, threshold=0.82)
         assert len(kept_s) == 1
 
+    def test_recent_with_numpy_array_embeddings_does_not_crash(self):
+        # Regression: pgvector/psycopg3 returns embeddings as numpy arrays.
+        # `if r.get("embedding")` on a multi-element numpy array raises
+        # "truth value of array is ambiguous" — must use `is not None` check.
+        import numpy as np
+        stories = [_make_story("AI story")]
+        embs = [[1.0, 0.0]]
+        # Simulate what get_recent_story_embeddings returns after pgvector registration
+        recent = [{"embedding": np.array([0.0, 1.0], dtype=np.float32)}]
+        kept_s, kept_e = _filter_already_covered(stories, embs, recent, threshold=0.82)
+        assert len(kept_s) == 1  # orthogonal → not filtered
+
+    def test_recent_with_numpy_array_identical_story_is_filtered(self):
+        import numpy as np
+        stories = [_make_story("AI story")]
+        embs = [[1.0, 0.0]]
+        recent = [{"embedding": np.array([1.0, 0.0], dtype=np.float32)}]  # identical
+        kept_s, kept_e = _filter_already_covered(stories, embs, recent, threshold=0.82)
+        assert len(kept_s) == 0  # filtered as already covered
+
 
 # ---------------------------------------------------------------------------
 # embed_and_cluster (integration — mocked embedding model and DB)

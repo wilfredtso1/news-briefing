@@ -124,7 +124,9 @@ def _filter_already_covered(
     if not recent:
         return stories, embeddings
 
-    recent_vecs = [r["embedding"] for r in recent if r.get("embedding")]
+    # Use 'is not None' — embeddings from pgvector are numpy arrays and raise
+    # "truth value of array is ambiguous" if evaluated directly in a boolean context.
+    recent_vecs = [r["embedding"] for r in recent if r.get("embedding") is not None]
     if not recent_vecs:
         return stories, embeddings
 

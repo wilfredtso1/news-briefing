@@ -228,7 +228,7 @@ def get_unacknowledged_digests(digest_type: str = "daily_brief", days_back: int 
             WHERE type = %s
               AND sent_at IS NOT NULL
               AND acknowledged_at IS NULL
-              AND sent_at >= NOW() - INTERVAL '%s days'
+              AND sent_at >= NOW() - (%s * INTERVAL '1 day')
             ORDER BY sent_at ASC
             LIMIT 50
             """,
@@ -334,7 +334,7 @@ def get_recent_story_embeddings(days_back: int = 2) -> list[dict]:
             SELECT s.id, s.title, s.embedding, s.cluster_id
             FROM stories s
             JOIN digests d ON s.digest_id = d.id
-            WHERE d.sent_at >= NOW() - INTERVAL '%s days'
+            WHERE d.sent_at >= NOW() - (%s * INTERVAL '1 day')
               AND s.embedding IS NOT NULL
             ORDER BY d.sent_at DESC
             LIMIT 200
@@ -380,7 +380,7 @@ def get_unacknowledged_stories(days_back: int = 7) -> list[dict]:
             WHERE d.type = 'daily_brief'
               AND d.sent_at IS NOT NULL
               AND d.acknowledged_at IS NULL
-              AND d.sent_at >= NOW() - INTERVAL '%s days'
+              AND d.sent_at >= NOW() - (%s * INTERVAL '1 day')
             ORDER BY COALESCE(s.cluster_id::text, s.id::text), d.sent_at DESC
             LIMIT 100
             """,
@@ -433,7 +433,7 @@ def get_weekly_digest_stats(days_back: int = 7) -> list[dict]:
             """
             SELECT id, type, sent_at, acknowledged_at, word_count, story_count
             FROM digests
-            WHERE sent_at >= NOW() - INTERVAL '%s days'
+            WHERE sent_at >= NOW() - (%s * INTERVAL '1 day')
             ORDER BY sent_at ASC
             LIMIT 50
             """,
@@ -450,7 +450,7 @@ def get_recent_feedback(days_back: int = 7) -> list[dict]:
         cur = conn.execute(
             """
             SELECT * FROM feedback_events
-            WHERE created_at >= NOW() - INTERVAL '%s days'
+            WHERE created_at >= NOW() - (%s * INTERVAL '1 day')
             ORDER BY created_at DESC
             LIMIT 100
             """,
